@@ -17,6 +17,7 @@ typedef struct {
         int   show_body;    /* -1 = use config, 0 = hide, 1 = show */
         int   show_bar;
         int   bar_value;    /* 0-100 */
+        int   stack_index;  /* vertical slot, 0 = first */
 } Notification;
 
 int notify(Notification* n);

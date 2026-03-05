@@ -4,15 +4,68 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <dbus/dbus.h>
 #include "notify.h"
 #include "log.h"
 #include "../config.h"
 
+/* slot tracker: counts active notifications per (pos_x, pos_y) pair */
+#define BND_MAX_CHILDREN 64
+static int  slot_count[3][3] = {{0}};
+static pid_t child_pid[BND_MAX_CHILDREN];
+static int   child_px[BND_MAX_CHILDREN];
+static int   child_py[BND_MAX_CHILDREN];
+static int   child_slot[BND_MAX_CHILDREN];
+static int   child_count = 0;
+
 static void sigchld_handler(int a) {
+        pid_t p;
+        int i;
         (void)a;
-        wait(NULL);
+        while ((p = waitpid(-1, NULL, WNOHANG)) > 0) {
+                for (i = 0; i < child_count; ++i) {
+                        if (child_pid[i] == p) {
+                                int px = child_px[i];
+                                int py = child_py[i];
+                                /* mark slot as free by shifting higher slots down */
+                                int freed = child_slot[i];
+                                int j;
+                                for (j = 0; j < child_count; ++j) {
+                                        if (child_px[j] == px
+                                                && child_py[j] == py
+                                                && child_slot[j] > freed) {
+                                                child_slot[j]--;
+                                        }
+                                }
+                                if (slot_count[px][py] > 0)
+                                        slot_count[px][py]--;
+                                /* compact array */
+                                child_pid[i]  = child_pid[child_count-1];
+                                child_px[i]   = child_px[child_count-1];
+                                child_py[i]   = child_py[child_count-1];
+                                child_slot[i] = child_slot[child_count-1];
+                                child_count--;
+                                break;
+                        }
+                }
+        }
+}
+
+static int acquire_slot(int pos_x, int pos_y) {
+        int s = slot_count[pos_x][pos_y]++;
+        return s;
+}
+
+static void register_child(pid_t p, int pos_x, int pos_y, int slot) {
+        if (child_count < BND_MAX_CHILDREN) {
+                child_pid[child_count]  = p;
+                child_px[child_count]   = pos_x;
+                child_py[child_count]   = pos_y;
+                child_slot[child_count] = slot;
+                child_count++;
+        }
 }
 
 static void send_notification_closed(DBusConnection* conn,
@@ -205,6 +258,9 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                         n.bg ? n.bg : "(default)",
                         n.show_bar, n.bar_value);
 
+                n.stack_index = acquire_slot(n.pos_x, n.pos_y);
+                w_log("slot acquired: index=%d pos=%d,%d total=%d", n.stack_index, n.pos_x, n.pos_y, slot_count[n.pos_x][n.pos_y]);
+
                 pid = fork();
                 if (pid == 0) {
                         notify(&n);
@@ -214,6 +270,9 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                         exit(EXIT_SUCCESS);
                 }
 
+                /* release slot when child finishes (via sigchld_handler) */
+                /* we track release by monitoring child exit in a wrapper */
+                register_child(pid, n.pos_x, n.pos_y, n.stack_index);
                 free(n.bg);
                 free(n.fg);
                 free(n.border_color);
@@ -252,8 +311,8 @@ send_reply:
                         "org.freedesktop.Notifications",
                         "GetServerInformation")) {
                 DBusMessage* reply;
-                const char* name    = "doid";
-                const char* vendor  = "doi";
+                const char* name    = "bndd";
+                const char* vendor  = "bnd";
                 const char* version = "1.0";
                 const char* spec    = "1.2";
                 reply = dbus_message_new_method_return(msg);
@@ -307,6 +366,16 @@ int main(void) {
         newaction.sa_flags = 0;
         sigaction(SIGCHLD, &newaction, NULL);
 
+        /* ensure log directory exists */
+        {
+                const char* home = getenv("HOME");
+                if (home) {
+                        char logdir[512];
+                        snprintf(logdir, sizeof(logdir), "%s/.bnd", home);
+                        mkdir(logdir, 0755);
+                }
+        }
+
         dbus_error_init(&err);
         conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
         if (dbus_error_is_set(&err)) {
@@ -332,7 +401,7 @@ int main(void) {
                 return EXIT_FAILURE;
         }
 
-        w_log("doid started");
+        w_log("bndd started");
 
         while (dbus_connection_read_write_dispatch(conn, -1))
                 ;

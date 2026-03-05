@@ -1,4 +1,4 @@
-/* doi configuration - edit and recompile to apply changes */
+/* bnd configuration - edit and recompile to apply changes */
 
 /* --- log --- */
 #define BND_LOG_FILE        ".doi/log"
@@ -17,7 +17,7 @@
 #define BND_ICON_SIZE       32      /* pixels */
 
 /* --- border (global) --- */
-#define BND_BORDER          0       /* border width in px, 0 = no border */
+#define BND_BORDER          1       /* border width in px, 0 = no border */
 #define BND_BORDER_COLOR    "wheat"
 
 /* --- position ---
@@ -28,6 +28,8 @@
 #define BND_POS_Y           BND_TOP
 #define BND_OFFSET_X        20
 #define BND_OFFSET_Y        20
+#define BND_STACK_GAP       15
+#define BND_STACK_HEIGHT    50  /* estimated notification height for stacking */
 
 /* position constants - do not edit */
 #define BND_LEFT            0
@@ -67,15 +69,15 @@
 #define BND_BRIGHT_FG         "wheat"
 #define BND_BRIGHT_BORDER        1
 #define BND_BRIGHT_BORDER_COLOR  "wheat"
-#define BND_BRIGHT_POS_X      BND_CENTER
+#define BND_BRIGHT_POS_X      BND_LEFT
 #define BND_BRIGHT_POS_Y      BND_BOTTOM
 
 /* --- screenshot module --- */
 #define BND_SCREENSHOT_TIMEOUT  3
-#define BND_MEDIA_BG        "#282828"
-#define BND_MEDIA_FG        "wheat"
-#define BND_MEDIA_BORDER        1
-#define BND_MEDIA_BORDER_COLOR  "wheat"
+#define BND_SCREENSHOT_BG       "#282828"
+#define BND_SCREENSHOT_FG       "wheat"
+#define BND_SCREENSHOT_BORDER        1
+#define BND_SCREENSHOT_BORDER_COLOR  "wheat"
 #define BND_SCREENSHOT_POS_X    BND_RIGHT
 #define BND_SCREENSHOT_POS_Y    BND_TOP
 #define BND_SCREENSHOT_DIR      "~/Pictures/Screenshots"
@@ -92,9 +94,9 @@
 
 /* --- wifi module (stub - implement modules/wifi.c) --- */
 #define BND_WIFI_TIMEOUT    3
-#define BND_MEDIA_BG        "#282828"
-#define BND_MEDIA_FG        "wheat"
-#define BND_MEDIA_BORDER        1
-#define BND_MEDIA_BORDER_COLOR  "wheat"
+#define BND_WIFI_BG         "#282828"
+#define BND_WIFI_FG         "wheat"
+#define BND_WIFI_BORDER        1
+#define BND_WIFI_BORDER_COLOR  "wheat"
 #define BND_WIFI_POS_X      BND_RIGHT
 #define BND_WIFI_POS_Y      BND_TOP

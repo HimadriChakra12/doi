@@ -34,13 +34,19 @@ static int calc_x(Display* dpy, int screen, int win_w, int pos_x) {
         }
 }
 
-static int calc_y(Display* dpy, int screen, int win_h, int pos_y) {
+static int calc_y(Display* dpy, int screen, int win_h, int pos_y,
+                int stack_index) {
         int sh = DisplayHeight(dpy, screen);
+        int step = BND_STACK_HEIGHT + BND_STACK_GAP;
         switch (pos_y) {
-                case BND_TOP:    return BND_OFFSET_Y;
-                case BND_MIDDLE: return (sh - win_h) / 2;
-                case BND_BOTTOM: return sh - win_h - BND_OFFSET_Y;
-                default:         return BND_OFFSET_Y;
+                case BND_TOP:
+                        return BND_OFFSET_Y + stack_index * step;
+                case BND_MIDDLE:
+                        return (sh - win_h) / 2 + stack_index * step;
+                case BND_BOTTOM:
+                        return sh - win_h - BND_OFFSET_Y - stack_index * step;
+                default:
+                        return BND_OFFSET_Y + stack_index * step;
         }
 }
 
@@ -202,7 +208,7 @@ int notify(Notification* n) {
         if (n->show_bar) win_h += BND_BAR_HEIGHT + BND_PADDING * 2;
 
         win_x = calc_x(dpy, screen, win_w, n->pos_x);
-        win_y = calc_y(dpy, screen, win_h, n->pos_y);
+        win_y = calc_y(dpy, screen, win_h, n->pos_y, n->stack_index);
 
         XAllocNamedColor(dpy, DefaultColormap(dpy, screen),
                 bg, &col, &dummy);

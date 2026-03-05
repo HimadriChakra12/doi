@@ -1,7 +1,10 @@
 /*
- * doi-bright: brightness control + notification
- * Usage: doi-bright [up|down|get]
- * Config: BND_BRIGHT_BACKEND, BND_BRIGHT_SYSFS_PATH in config.h
+ * doi-bright: brightness notification
+ * Usage:
+ *   doi-bright get          - read brightness and notify
+ *   doi-bright set PERCENT  - notify with given percent (no sysfs read)
+ *   doi-bright up           - increase by 5% then notify
+ *   doi-bright down         - decrease by 5% then notify
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +43,7 @@ static int get_brightness(void) {
 #endif
 }
 
-static void set_brightness(int delta) {
+static void adjust_brightness(int delta) {
 #if BND_BRIGHT_BACKEND == BND_BRIGHT_SYSFS
         char cur_path[256], max_path[256];
         int cur, max, next;
@@ -62,26 +65,10 @@ static void set_brightness(int delta) {
 #endif
 }
 
-int main(int argc, char** argv) {
-        int val;
+static void send_notify(int val) {
         char body[64];
         BndNotifyOpts opts;
 
-        if (argc < 2) {
-                fprintf(stderr, "usage: doi-bright [up|down|get]\n");
-                return EXIT_FAILURE;
-        }
-
-        if (strcmp(argv[1], "up") == 0) {
-                set_brightness(5);
-        } else if (strcmp(argv[1], "down") == 0) {
-                set_brightness(-5);
-        } else if (strcmp(argv[1], "get") != 0) {
-                fprintf(stderr, "usage: doi-bright [up|down|get]\n");
-                return EXIT_FAILURE;
-        }
-
-        val = get_brightness();
         snprintf(body, sizeof(body), "%d%%", val);
 
         memset(&opts, 0, sizeof(BndNotifyOpts));
@@ -98,5 +85,35 @@ int main(int argc, char** argv) {
         opts.show_bar     = 1;
         opts.bar_value    = val;
 
-        return doi_notify_opts(&opts);
+        doi_notify_opts(&opts);
+}
+
+int main(int argc, char** argv) {
+        if (argc < 2) {
+                fprintf(stderr,
+                        "usage: doi-bright [get|set PERCENT|up|down]\n");
+                return EXIT_FAILURE;
+        }
+
+        if (strcmp(argv[1], "set") == 0) {
+                /* fast path: percent provided by caller, no sysfs read */
+                int val = (argc >= 3) ? atoi(argv[2]) : 0;
+                if (val < 0)   val = 0;
+                if (val > 100) val = 100;
+                send_notify(val);
+        } else if (strcmp(argv[1], "get") == 0) {
+                send_notify(get_brightness());
+        } else if (strcmp(argv[1], "up") == 0) {
+                adjust_brightness(5);
+                send_notify(get_brightness());
+        } else if (strcmp(argv[1], "down") == 0) {
+                adjust_brightness(-5);
+                send_notify(get_brightness());
+        } else {
+                fprintf(stderr,
+                        "usage: doi-bright [get|set PERCENT|up|down]\n");
+                return EXIT_FAILURE;
+        }
+
+        return EXIT_SUCCESS;
 }
