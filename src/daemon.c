@@ -347,13 +347,17 @@ send_reply:
                         "GetCapabilities")) {
                 DBusMessage* reply;
                 DBusMessageIter args, arr;
-                const char* caps[] = { "body", "icon-static", "x-doi-hints" };
+                const char* caps[] = {
+                        "actions", "body", "body-markup",
+                        "icon-static", "persistence",
+                        "x-doi-hints"
+                };
                 int i;
                 reply = dbus_message_new_method_return(msg);
                 dbus_message_iter_init_append(reply, &args);
                 dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY,
                         DBUS_TYPE_STRING_AS_STRING, &arr);
-                for (i = 0; i < 3; ++i)
+                for (i = 0; i < 6; ++i)
                         dbus_message_iter_append_basic(&arr,
                                 DBUS_TYPE_STRING, &caps[i]);
                 dbus_message_iter_close_container(&args, &arr);
