@@ -81,7 +81,7 @@ static void draw_bar(Display* dpy, Window win, GC gc,
 static void draw_content(Display* dpy, Window win, GC gc,
                 XFontSet font, const Notification* n,
                 int win_w, int win_h,
-                int text_h, int body_h,
+                int text_h,
                 int border, const char* fg, const char* border_color,
                 int show_icon, int show_body) {
         int cur_y, tx;
@@ -125,9 +125,18 @@ static void draw_content(Display* dpy, Window win, GC gc,
                         tx, cur_y, n->summary, strlen(n->summary));
 
         if (show_body && n->body && n->body[0]) {
-                cur_y += body_h + BND_PADDING;
-                Xutf8DrawString(dpy, win, font, gc,
-                        tx, cur_y, n->body, strlen(n->body));
+                const char* line = n->body;
+                const char* nl;
+                cur_y += text_h + BND_PADDING;
+                while (line && *line) {
+                        nl = strchr(line, '\n');
+                        int len = nl ? (int)(nl - line) : (int)strlen(line);
+                        if (len > 0)
+                                Xutf8DrawString(dpy, win, font, gc,
+                                        tx, cur_y, line, len);
+                        cur_y += text_h + BND_PADDING;
+                        line = nl ? nl + 1 : NULL;
+                }
         }
 
         if (n->show_bar) {
@@ -196,10 +205,21 @@ int notify(Notification* n) {
                 Xutf8TextEscapement(font, n->body, strlen(n->body)) : 0;
         body_h = (show_body && n->body && n->body[0]) ? text_h : 0;
 
+        /* count newlines in body for multiline height */
+        if (show_body && n->body) {
+                const char* p = n->body;
+                while (*p) { if (*p++ == '\n') body_h += text_h + BND_PADDING; }
+        }
+
         win_w = (BND_MARGIN + border) * 2 + BND_PADDING * 2;
         if (show_icon && n->icon && n->icon[0])
                 win_w += BND_ICON_SIZE + BND_PADDING;
         win_w += (text_w > body_w ? text_w : body_w);
+        /* cap width at screen width * 0.4 */
+        {
+                int maxw = (int)(DisplayWidth(dpy, screen) * 0.4);
+                if (win_w > maxw) win_w = maxw;
+        }
         if (n->show_bar && win_w < BND_BAR_WIDTH + (BND_MARGIN + border) * 2)
                 win_w = BND_BAR_WIDTH + (BND_MARGIN + border) * 2;
 
@@ -257,7 +277,7 @@ int notify(Notification* n) {
                         case MapNotify:
                                 mapped = 1;
                                 draw_content(dpy, win, gc, font, n,
-                                        win_w, win_h, text_h, body_h,
+                                        win_w, win_h, text_h,
                                         border, fg, border_color,
                                         show_icon, show_body);
                                 XFlush(dpy);
@@ -265,7 +285,7 @@ int notify(Notification* n) {
                         case Expose:
                                 if (mapped && ev.xexpose.count == 0) {
                                         draw_content(dpy, win, gc, font, n,
-                                                win_w, win_h, text_h, body_h,
+                                                win_w, win_h, text_h,
                                                 border, fg, border_color,
                                                 show_icon, show_body);
                                         XFlush(dpy);

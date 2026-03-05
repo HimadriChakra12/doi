@@ -271,7 +271,15 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                 n.summary      = summary;
                 n.body         = body;
                 n.app_name     = app_name;
-                n.icon         = app_icon;
+                /* skip file:// paths unless Imlib2 is available
+                 * to avoid rendering raw paths as text */
+#ifdef BND_USE_IMLIB2
+                n.icon = app_icon;
+#else
+                n.icon = (app_icon[0] && app_icon[0] != '/'
+                        && strncmp(app_icon, "file:", 5) != 0)
+                        ? app_icon : "";
+#endif
                 n.bg           = NULL;
                 n.fg           = NULL;
                 n.border_color = NULL;
