@@ -70,7 +70,7 @@
 #define BND_BRIGHT_BORDER        1
 #define BND_BRIGHT_BORDER_COLOR  "wheat"
 #define BND_BRIGHT_POS_X      BND_LEFT
-#define BND_BRIGHT_POS_Y      BND_BOTTOM
+#define BND_BRIGHT_POS_Y      BND_TOP
 
 /* --- screenshot module --- */
 #define BND_SCREENSHOT_TIMEOUT  3

@@ -4,10 +4,6 @@
 #include <dbus/dbus.h>
 #include "module.h"
 
-/*
- * Pack a string hint into a DBus hints dict iterator.
- * hints dict is a{sv} — each entry is {string, variant<string>}
- */
 static void append_hint_str(DBusMessageIter* dict,
                 const char* key, const char* val) {
         DBusMessageIter entry, var;
@@ -35,6 +31,63 @@ static void append_hint_int(DBusMessageIter* dict,
         dbus_message_iter_close_container(dict, &entry);
 }
 
+/* persist last notification id to ~/.doi/notif_ids
+ * format: one entry per line: "<key>\t<id>\n"
+ * tab separator allows full unicode+spaces in key */
+
+static dbus_uint32_t read_last_id(const char* key) {
+        char path[512], line[256];
+        const char* home = getenv("HOME");
+        size_t klen;
+        FILE* f;
+        if (!home) return 0;
+        klen = strlen(key);
+        snprintf(path, sizeof(path), "%s/.doi/notif_ids", home);
+        f = fopen(path, "r");
+        if (!f) return 0;
+        while (fgets(line, sizeof(line), f)) {
+                if (strncmp(line, key, klen) == 0 && line[klen] == '\t') {
+                        unsigned int v = (unsigned int)atoi(line + klen + 1);
+                        fclose(f);
+                        return (dbus_uint32_t)v;
+                }
+        }
+        fclose(f);
+        return 0;
+}
+
+static void write_last_id(const char* key, dbus_uint32_t id) {
+        char path[512], tmp[512], line[256];
+        const char* home = getenv("HOME");
+        FILE* fin;
+        FILE* fout;
+        int found = 0;
+        size_t klen;
+        if (!home) return;
+        klen = strlen(key);
+        snprintf(path, sizeof(path), "%s/.doi/notif_ids", home);
+        snprintf(tmp,  sizeof(tmp),  "%s/.doi/notif_ids.tmp", home);
+        fin  = fopen(path, "r");
+        fout = fopen(tmp,  "w");
+        if (!fout) return;
+        if (fin) {
+                while (fgets(line, sizeof(line), fin)) {
+                        if (strncmp(line, key, klen) == 0
+                                        && line[klen] == '\t') {
+                                fprintf(fout, "%s\t%u\n", key, id);
+                                found = 1;
+                        } else {
+                                fputs(line, fout);
+                        }
+                }
+                fclose(fin);
+        }
+        if (!found)
+                fprintf(fout, "%s\t%u\n", key, id);
+        fclose(fout);
+        rename(tmp, path);
+}
+
 int doi_notify_opts(const BndNotifyOpts* opts) {
         DBusConnection*  conn;
         DBusError        err;
@@ -45,9 +98,10 @@ int doi_notify_opts(const BndNotifyOpts* opts) {
         char*  app_icon   = (char*)(opts->icon    ? opts->icon    : "");
         char*  sum        = (char*)(opts->summary ? opts->summary : "");
         char*  bod        = (char*)(opts->body    ? opts->body    : "");
-        dbus_uint32_t replace_id = 0;
-        dbus_uint32_t notif_id;
-        dbus_int32_t  tms = (dbus_int32_t)opts->timeout;
+        const char*   id_key     = sum[0] ? sum : "default";
+        dbus_uint32_t replace_id = read_last_id(id_key);
+        dbus_uint32_t notif_id   = 0;
+        dbus_int32_t  tms        = (dbus_int32_t)opts->timeout;
 
         dbus_error_init(&err);
         conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
@@ -76,21 +130,21 @@ int doi_notify_opts(const BndNotifyOpts* opts) {
                 DBUS_TYPE_STRING_AS_STRING, &arr);
         dbus_message_iter_close_container(&args, &arr);
 
-        /* hints: pack all doi-specific opts */
+        /* hints */
         dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY,
                 "{sv}", &dict);
-
-        if (opts->bg)           append_hint_str(&dict, "x-doi-bg",    opts->bg);
-        if (opts->fg)           append_hint_str(&dict, "x-doi-fg",    opts->fg);
-        if (opts->border_color) append_hint_str(&dict, "x-doi-border-color",
-                                        opts->border_color);
-        if (opts->border >= 0)  append_hint_int(&dict, "x-doi-border",
-                                        opts->border);
+        if (opts->bg)
+                append_hint_str(&dict, "x-doi-bg", opts->bg);
+        if (opts->fg)
+                append_hint_str(&dict, "x-doi-fg", opts->fg);
+        if (opts->border_color)
+                append_hint_str(&dict, "x-doi-border-color", opts->border_color);
+        if (opts->border >= 0)
+                append_hint_int(&dict, "x-doi-border", opts->border);
         append_hint_int(&dict, "x-doi-pos-x",    opts->pos_x);
         append_hint_int(&dict, "x-doi-pos-y",    opts->pos_y);
         append_hint_int(&dict, "x-doi-show-bar",  opts->show_bar);
         append_hint_int(&dict, "x-doi-bar-value", opts->bar_value);
-
         dbus_message_iter_close_container(&args, &dict);
 
         dbus_message_iter_append_basic(&args, DBUS_TYPE_INT32, &tms);
@@ -105,6 +159,7 @@ int doi_notify_opts(const BndNotifyOpts* opts) {
 
         dbus_message_get_args(reply, &err,
                 DBUS_TYPE_UINT32, &notif_id, DBUS_TYPE_INVALID);
+        write_last_id(id_key, notif_id);
         dbus_message_unref(reply);
         dbus_message_unref(msg);
         return 0;
@@ -118,7 +173,7 @@ int doi_notify(const char* summary, const char* body,
         opts.body     = body;
         opts.icon     = icon;
         opts.timeout  = timeout_ms;
-        opts.border   = -1;  /* use global */
+        opts.border   = -1;
         opts.pos_x    = BND_POS_X;
         opts.pos_y    = BND_POS_Y;
         return doi_notify_opts(&opts);

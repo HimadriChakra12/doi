@@ -68,6 +68,49 @@ static void register_child(pid_t p, int pos_x, int pos_y, int slot) {
         }
 }
 
+/* notif_id -> child index map for replace support */
+#define BND_MAX_IDS 64
+static dbus_uint32_t id_map_id[BND_MAX_IDS];
+static int           id_map_idx[BND_MAX_IDS]; /* index into child arrays */
+static int           id_map_count = 0;
+
+static void id_map_add(dbus_uint32_t id, int child_idx) {
+        if (id_map_count < BND_MAX_IDS) {
+                id_map_id[id_map_count]  = id;
+                id_map_idx[id_map_count] = child_idx;
+                id_map_count++;
+        }
+}
+
+/* Kill existing child for replace_id, returns its slot or -1 */
+static int replace_existing(dbus_uint32_t replace_id, int* out_px, int* out_py) {
+        int i;
+        if (replace_id == 0) return -1;
+        for (i = 0; i < id_map_count; ++i) {
+                if (id_map_id[i] == replace_id) {
+                        int idx = id_map_idx[i];
+                        if (idx < child_count) {
+                                int slot = child_slot[idx];
+                                *out_px  = child_px[idx];
+                                *out_py  = child_py[idx];
+                                kill(child_pid[idx], SIGTERM);
+                                /* remove from child array */
+                                child_pid[idx]  = child_pid[child_count-1];
+                                child_px[idx]   = child_px[child_count-1];
+                                child_py[idx]   = child_py[child_count-1];
+                                child_slot[idx] = child_slot[child_count-1];
+                                child_count--;
+                                /* remove from id_map */
+                                id_map_id[i]  = id_map_id[id_map_count-1];
+                                id_map_idx[i] = id_map_idx[id_map_count-1];
+                                id_map_count--;
+                                return slot;
+                        }
+                }
+        }
+        return -1;
+}
+
 static void send_notification_closed(DBusConnection* conn,
                 dbus_uint32_t id, dbus_uint32_t reason) {
         DBusMessage* sig;
@@ -251,15 +294,25 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                                 n.timeout = expire_timeout / 1000;
                 }
 
-                (void)replace_id;
-
-                w_log("Notify: app=%s summary=%s pos=%d,%d bg=%s bar=%d val=%d",
+                w_log("Notify: app=%s summary=%s pos=%d,%d bg=%s bar=%d val=%d replace=%u",
                         app_name, summary, n.pos_x, n.pos_y,
                         n.bg ? n.bg : "(default)",
-                        n.show_bar, n.bar_value);
+                        n.show_bar, n.bar_value, replace_id);
 
-                n.stack_index = acquire_slot(n.pos_x, n.pos_y);
-                w_log("slot acquired: index=%d pos=%d,%d total=%d", n.stack_index, n.pos_x, n.pos_y, slot_count[n.pos_x][n.pos_y]);
+                {
+                        int rpx = n.pos_x, rpy = n.pos_y;
+                        int rslot = replace_existing(replace_id, &rpx, &rpy);
+                        if (rslot >= 0) {
+                                /* reuse same slot and position */
+                                n.pos_x       = rpx;
+                                n.pos_y       = rpy;
+                                n.stack_index = rslot;
+                                w_log("replacing slot %d pos=%d,%d", rslot, rpx, rpy);
+                        } else {
+                                n.stack_index = acquire_slot(n.pos_x, n.pos_y);
+                                w_log("slot acquired: index=%d pos=%d,%d", n.stack_index, n.pos_x, n.pos_y);
+                        }
+                }
 
                 pid = fork();
                 if (pid == 0) {
@@ -273,6 +326,7 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                 /* release slot when child finishes (via sigchld_handler) */
                 /* we track release by monitoring child exit in a wrapper */
                 register_child(pid, n.pos_x, n.pos_y, n.stack_index);
+                id_map_add(notif_id, child_count - 1);
                 free(n.bg);
                 free(n.fg);
                 free(n.border_color);
