@@ -68,45 +68,70 @@ static void register_child(pid_t p, int pos_x, int pos_y, int slot) {
         }
 }
 
-/* notif_id -> child index map for replace support */
+/* replace tracking: keyed by notif_id OR by app+summary string */
 #define BND_MAX_IDS 64
+
 static dbus_uint32_t id_map_id[BND_MAX_IDS];
-static int           id_map_idx[BND_MAX_IDS]; /* index into child arrays */
+static int           id_map_idx[BND_MAX_IDS];
+static char          id_map_key[BND_MAX_IDS][128]; /* "app\0summary" */
 static int           id_map_count = 0;
 
-static void id_map_add(dbus_uint32_t id, int child_idx) {
+static void make_key(char* out, size_t sz,
+                const char* app, const char* summary) {
+        snprintf(out, sz, "%s|%s", app ? app : "", summary ? summary : "");
+}
+
+static void id_map_add(dbus_uint32_t id, int child_idx,
+                const char* app, const char* summary) {
         if (id_map_count < BND_MAX_IDS) {
                 id_map_id[id_map_count]  = id;
                 id_map_idx[id_map_count] = child_idx;
+                make_key(id_map_key[id_map_count],
+                        sizeof(id_map_key[0]), app, summary);
                 id_map_count++;
         }
 }
 
-/* Kill existing child for replace_id, returns its slot or -1 */
-static int replace_existing(dbus_uint32_t replace_id, int* out_px, int* out_py) {
+static int do_replace(int i, int* out_px, int* out_py) {
+        int idx = id_map_idx[i];
+        if (idx < child_count) {
+                int slot = child_slot[idx];
+                *out_px  = child_px[idx];
+                *out_py  = child_py[idx];
+                kill(child_pid[idx], SIGTERM);
+                child_pid[idx]  = child_pid[child_count-1];
+                child_px[idx]   = child_px[child_count-1];
+                child_py[idx]   = child_py[child_count-1];
+                child_slot[idx] = child_slot[child_count-1];
+                child_count--;
+                id_map_id[i]  = id_map_id[id_map_count-1];
+                id_map_idx[i] = id_map_idx[id_map_count-1];
+                memcpy(id_map_key[i], id_map_key[id_map_count-1],
+                        sizeof(id_map_key[0]));
+                id_map_count--;
+                return slot;
+        }
+        return -1;
+}
+
+/* Kill existing child: first by replace_id, then by app+summary key */
+static int replace_existing(dbus_uint32_t replace_id,
+                const char* app, const char* summary,
+                int* out_px, int* out_py) {
+        char key[128];
         int i;
-        if (replace_id == 0) return -1;
-        for (i = 0; i < id_map_count; ++i) {
-                if (id_map_id[i] == replace_id) {
-                        int idx = id_map_idx[i];
-                        if (idx < child_count) {
-                                int slot = child_slot[idx];
-                                *out_px  = child_px[idx];
-                                *out_py  = child_py[idx];
-                                kill(child_pid[idx], SIGTERM);
-                                /* remove from child array */
-                                child_pid[idx]  = child_pid[child_count-1];
-                                child_px[idx]   = child_px[child_count-1];
-                                child_py[idx]   = child_py[child_count-1];
-                                child_slot[idx] = child_slot[child_count-1];
-                                child_count--;
-                                /* remove from id_map */
-                                id_map_id[i]  = id_map_id[id_map_count-1];
-                                id_map_idx[i] = id_map_idx[id_map_count-1];
-                                id_map_count--;
-                                return slot;
-                        }
+        /* try by id first */
+        if (replace_id > 0) {
+                for (i = 0; i < id_map_count; ++i) {
+                        if (id_map_id[i] == replace_id)
+                                return do_replace(i, out_px, out_py);
                 }
+        }
+        /* fall back to app+summary key */
+        make_key(key, sizeof(key), app, summary);
+        for (i = 0; i < id_map_count; ++i) {
+                if (strcmp(id_map_key[i], key) == 0)
+                        return do_replace(i, out_px, out_py);
         }
         return -1;
 }
@@ -309,14 +334,58 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
 
                 {
                         int rpx = n.pos_x, rpy = n.pos_y;
-                        int rslot = replace_existing(replace_id, &rpx, &rpy);
+                        int rslot = replace_existing(replace_id,
+                                app_name, summary, &rpx, &rpy);
                         if (rslot >= 0) {
-                                /* reuse same slot and position */
                                 n.pos_x       = rpx;
                                 n.pos_y       = rpy;
                                 n.stack_index = rslot;
                                 w_log("replacing slot %d pos=%d,%d", rslot, rpx, rpy);
                         } else {
+#if BND_STACK_LIMIT > 0
+                                /* check if we are at the limit */
+                                if (slot_count[n.pos_x][n.pos_y] >= BND_STACK_LIMIT) {
+                                        /* update the overflow indicator in the last slot */
+                                        int overflow = slot_count[n.pos_x][n.pos_y]
+                                                        - BND_STACK_LIMIT + 1;
+                                        char obody[64];
+                                        Notification ov;
+                                        snprintf(obody, sizeof(obody),
+                                                BND_STACK_OVERFLOW, overflow);
+                                        memset(&ov, 0, sizeof(Notification));
+                                        ov.summary      = obody;
+                                        ov.body         = "";
+                                        ov.bg           = n.bg;
+                                        ov.fg           = n.fg;
+                                        ov.border_color = n.border_color;
+                                        ov.border       = n.border;
+                                        ov.timeout      = n.timeout;
+                                        ov.pos_x        = n.pos_x;
+                                        ov.pos_y        = n.pos_y;
+                                        ov.show_icon    = 0;
+                                        ov.show_body    = 0;
+                                        ov.show_bar     = 0;
+                                        ov.stack_index  = BND_STACK_LIMIT - 1;
+                                        /* replace existing overflow indicator if present */
+                                        {
+                                                int ox, oy;
+                                                replace_existing(0,
+                                                        "doi-overflow", "overflow",
+                                                        &ox, &oy);
+                                        }
+                                        pid = fork();
+                                        if (pid == 0) {
+                                                notify(&ov);
+                                                exit(EXIT_SUCCESS);
+                                        }
+                                        register_child(pid, n.pos_x, n.pos_y,
+                                                BND_STACK_LIMIT - 1);
+                                        id_map_add(notif_id, child_count - 1,
+                                                "doi-overflow", "overflow");
+                                        slot_count[n.pos_x][n.pos_y]++;
+                                        goto send_reply;
+                                }
+#endif
                                 n.stack_index = acquire_slot(n.pos_x, n.pos_y);
                                 w_log("slot acquired: index=%d pos=%d,%d", n.stack_index, n.pos_x, n.pos_y);
                         }
@@ -334,7 +403,7 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                 /* release slot when child finishes (via sigchld_handler) */
                 /* we track release by monitoring child exit in a wrapper */
                 register_child(pid, n.pos_x, n.pos_y, n.stack_index);
-                id_map_add(notif_id, child_count - 1);
+                id_map_add(notif_id, child_count - 1, app_name, summary);
                 free(n.bg);
                 free(n.fg);
                 free(n.border_color);
