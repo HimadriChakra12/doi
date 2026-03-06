@@ -24,13 +24,13 @@ static void sysfs_write_int(const char* path, int v) {
 }
 
 static int get_brightness(void) {
-#if BND_BRIGHT_BACKEND == BND_BRIGHT_SYSFS
+#if DOI_BRIGHT_BACKEND == DOI_BRIGHT_SYSFS
         char cur_path[256], max_path[256];
         int cur, max;
         snprintf(cur_path, sizeof(cur_path),
-                "%s/brightness", BND_BRIGHT_SYSFS_PATH);
+                "%s/brightness", DOI_BRIGHT_SYSFS_PATH);
         snprintf(max_path, sizeof(max_path),
-                "%s/max_brightness", BND_BRIGHT_SYSFS_PATH);
+                "%s/max_brightness", DOI_BRIGHT_SYSFS_PATH);
         cur = sysfs_read_int(cur_path);
         max = sysfs_read_int(max_path);
         if (max == 0) return 0;
@@ -44,13 +44,13 @@ static int get_brightness(void) {
 }
 
 static void adjust_brightness(int delta) {
-#if BND_BRIGHT_BACKEND == BND_BRIGHT_SYSFS
+#if DOI_BRIGHT_BACKEND == DOI_BRIGHT_SYSFS
         char cur_path[256], max_path[256];
         int cur, max, next;
         snprintf(cur_path, sizeof(cur_path),
-                "%s/brightness", BND_BRIGHT_SYSFS_PATH);
+                "%s/brightness", DOI_BRIGHT_SYSFS_PATH);
         snprintf(max_path, sizeof(max_path),
-                "%s/max_brightness", BND_BRIGHT_SYSFS_PATH);
+                "%s/max_brightness", DOI_BRIGHT_SYSFS_PATH);
         cur = sysfs_read_int(cur_path);
         max = sysfs_read_int(max_path);
         next = cur + (delta * max / 100);
@@ -75,13 +75,13 @@ static void send_notify(int val) {
         opts.summary      = "🔆  Brightness";
         opts.body         = body;
         opts.icon         = "";
-        opts.bg           = BND_BRIGHT_BG;
-        opts.fg           = BND_BRIGHT_FG;
-        opts.border       = BND_BRIGHT_BORDER;
-        opts.border_color = BND_BRIGHT_BORDER_COLOR;
-        opts.timeout      = BND_BRIGHT_TIMEOUT * 1000;
-        opts.pos_x        = BND_BRIGHT_POS_X;
-        opts.pos_y        = BND_BRIGHT_POS_Y;
+        opts.bg           = DOI_BRIGHT_BG;
+        opts.fg           = DOI_BRIGHT_FG;
+        opts.border       = DOI_BRIGHT_BORDER;
+        opts.border_color = DOI_BRIGHT_BORDER_COLOR;
+        opts.timeout      = DOI_BRIGHT_TIMEOUT * 1000;
+        opts.pos_x        = DOI_BRIGHT_POS_X;
+        opts.pos_y        = DOI_BRIGHT_POS_Y;
         opts.show_bar     = 1;
         opts.bar_value    = val;
 

@@ -20,7 +20,7 @@ void w_log(const char* fmt, ...) {
                 fprintf(stderr, "ERROR: HOME not set.\n");
                 return;
         }
-        snprintf(path, sizeof(path), "%s/%s", home, BND_LOG_FILE);
+        snprintf(path, sizeof(path), "%s/%s", home, DOI_LOG_FILE);
 
         f = fopen(path, "a");
         if (!f) {

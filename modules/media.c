@@ -204,13 +204,13 @@ int main(int argc, char** argv) {
                 opts.summary      = summary;
                 opts.body         = body;
                 opts.icon         = "";
-                opts.bg           = BND_MEDIA_BG;
-                opts.fg           = BND_MEDIA_FG;
-                opts.border       = BND_MEDIA_BORDER;
-                opts.border_color = BND_MEDIA_BORDER_COLOR;
-                opts.timeout      = BND_MEDIA_TIMEOUT * 1000;
-                opts.pos_x        = BND_MEDIA_POS_X;
-                opts.pos_y        = BND_MEDIA_POS_Y;
+                opts.bg           = DOI_MEDIA_BG;
+                opts.fg           = DOI_MEDIA_FG;
+                opts.border       = DOI_MEDIA_BORDER;
+                opts.border_color = DOI_MEDIA_BORDER_COLOR;
+                opts.timeout      = DOI_MEDIA_TIMEOUT * 1000;
+                opts.pos_x        = DOI_MEDIA_POS_X;
+                opts.pos_y        = DOI_MEDIA_POS_Y;
                 opts.show_bar     = 0;
                 return doi_notify_opts(&opts);
         }

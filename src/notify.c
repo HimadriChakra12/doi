@@ -1,9 +1,13 @@
 #include <sys/time.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <locale.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
@@ -11,33 +15,38 @@
 #include "log.h"
 #include "../config.h"
 
-#ifdef BND_USE_IMLIB2
+#ifdef DOI_USE_IMLIB2
 #include <Imlib2.h>
 #endif
+
+static volatile int g_update = 0;
+static volatile int g_exit   = 0;
+static void handle_usr1(int s) { (void)s; g_exit   = 1; }
+static void handle_usr2(int s) { (void)s; g_update = 1; }
 
 static int calc_x(Display* dpy, int screen, int win_w, int pos_x) {
         int sw = DisplayWidth(dpy, screen);
         switch (pos_x) {
-                case BND_LEFT:   return BND_OFFSET_X;
-                case BND_CENTER: return (sw - win_w) / 2;
-                case BND_RIGHT:  return sw - win_w - BND_OFFSET_X;
-                default:         return BND_OFFSET_X;
+                case DOI_LEFT:   return DOI_OFFSET_X;
+                case DOI_CENTER: return (sw - win_w) / 2;
+                case DOI_RIGHT:  return sw - win_w - DOI_OFFSET_X;
+                default:         return DOI_OFFSET_X;
         }
 }
 
 static int calc_y(Display* dpy, int screen, int win_h, int pos_y,
                 int stack_index) {
         int sh = DisplayHeight(dpy, screen);
-        int step = BND_STACK_HEIGHT + BND_STACK_GAP;
+        int step = DOI_STACK_HEIGHT + DOI_STACK_GAP;
         switch (pos_y) {
-                case BND_TOP:
-                        return BND_OFFSET_Y + stack_index * step;
-                case BND_MIDDLE:
+                case DOI_TOP:
+                        return DOI_OFFSET_Y + stack_index * step;
+                case DOI_MIDDLE:
                         return (sh - win_h) / 2 + stack_index * step;
-                case BND_BOTTOM:
-                        return sh - win_h - BND_OFFSET_Y - stack_index * step;
+                case DOI_BOTTOM:
+                        return sh - win_h - DOI_OFFSET_Y - stack_index * step;
                 default:
-                        return BND_OFFSET_Y + stack_index * step;
+                        return DOI_OFFSET_Y + stack_index * step;
         }
 }
 
@@ -47,103 +56,96 @@ static void draw_border(Display* dpy, Window win, GC gc,
         XColor col, dummy;
         int i;
         if (border <= 0) return;
-        XAllocNamedColor(dpy, DefaultColormap(dpy, screen), color, &col, &dummy);
+        XAllocNamedColor(dpy, DefaultColormap(dpy, screen),
+                color, &col, &dummy);
         XSetForeground(dpy, gc, col.pixel);
         for (i = 0; i < border; ++i)
                 XDrawRectangle(dpy, win, gc,
-                        i, i,
-                        win_w - 1 - i * 2,
-                        win_h - 1 - i * 2);
+                        i, i, win_w-1-i*2, win_h-1-i*2);
 }
 
 static void draw_bar(Display* dpy, Window win, GC gc,
                 int x, int y, int value, int screen) {
         XColor fg, bg, dummy;
         Colormap cmap = DefaultColormap(dpy, screen);
-        int filled = (BND_BAR_WIDTH * value) / 100;
-        XAllocNamedColor(dpy, cmap, BND_BAR_BG, &bg, &dummy);
+        int filled = (DOI_BAR_WIDTH * value) / 100;
+        XAllocNamedColor(dpy, cmap, DOI_BAR_BG, &bg, &dummy);
         XSetForeground(dpy, gc, bg.pixel);
-        XFillRectangle(dpy, win, gc, x, y, BND_BAR_WIDTH, BND_BAR_HEIGHT);
-        XAllocNamedColor(dpy, cmap, BND_BAR_FG, &fg, &dummy);
+        XFillRectangle(dpy, win, gc, x, y, DOI_BAR_WIDTH, DOI_BAR_HEIGHT);
+        XAllocNamedColor(dpy, cmap, DOI_BAR_FG, &fg, &dummy);
         XSetForeground(dpy, gc, fg.pixel);
-        XFillRectangle(dpy, win, gc, x, y, filled, BND_BAR_HEIGHT);
+        if (filled > 0)
+                XFillRectangle(dpy, win, gc, x, y, filled, DOI_BAR_HEIGHT);
 }
 
-static void xft_draw_utf8(XftDraw* xd, XftFont* font, XftColor* col,
-                int x, int y, const char* str, int len) {
-        if (len <= 0 || !str || !str[0]) return;
-        XftDrawStringUtf8(xd, col, font, x, y,
-                (const FcChar8*)str, len);
-}
-
-static void draw_content(Display* dpy, int screen, Window win, GC gc,
+static void repaint(Display* dpy, int screen, Window win, GC gc,
                 XftFont* font, const Notification* n,
                 int win_w, int win_h, int text_h,
-                int border, const char* fg_name, const char* border_color,
+                int border, const char* fg_name, const char* bg_name,
+                const char* border_color,
                 int show_icon, int show_body) {
         int cur_y, tx;
-        XftDraw*  xd;
-        XftColor  fg;
-        Visual*   vis  = DefaultVisual(dpy, screen);
-        Colormap  cmap = DefaultColormap(dpy, screen);
+        XftDraw* xd;
+        XftColor fg;
+        Visual*  vis  = DefaultVisual(dpy, screen);
+        Colormap cmap = DefaultColormap(dpy, screen);
+        XColor   bgcol, dummy;
+
+        /* clear window */
+        XAllocNamedColor(dpy, cmap, bg_name, &bgcol, &dummy);
+        XSetForeground(dpy, gc, bgcol.pixel);
+        XFillRectangle(dpy, win, gc, 0, 0, win_w, win_h);
 
         draw_border(dpy, win, gc, win_w, win_h, border, border_color, screen);
 
         XftColorAllocName(dpy, vis, cmap, fg_name, &fg);
         xd = XftDrawCreate(dpy, win, vis, cmap);
 
-        cur_y = (BND_MARGIN + border) + text_h;
-        tx    = (BND_MARGIN + border) + BND_PADDING;
+        cur_y = (DOI_MARGIN + border) + text_h;
+        tx    = (DOI_MARGIN + border) + DOI_PADDING;
 
         if (show_icon && n->icon && n->icon[0]) {
-#ifdef BND_USE_IMLIB2
-                Imlib_Image img = imlib_load_image(n->icon);
-                if (img) {
-                        imlib_context_set_image(img);
-                        imlib_context_set_display(dpy);
-                        imlib_context_set_visual(vis);
-                        imlib_context_set_colormap(cmap);
-                        imlib_context_set_drawable(win);
-                        imlib_render_image_on_drawable_at_size(
-                                BND_MARGIN + border, BND_MARGIN + border,
-                                BND_ICON_SIZE, BND_ICON_SIZE);
-                        imlib_free_image();
-                }
-                tx += BND_ICON_SIZE + BND_PADDING;
-#else
-                xft_draw_utf8(xd, font, &fg, BND_MARGIN + border, cur_y,
-                        n->icon, strlen(n->icon));
-                tx += text_h + BND_PADDING;
-#endif
+                XftDrawStringUtf8(xd, &fg, font,
+                        DOI_MARGIN + border, cur_y,
+                        (const FcChar8*)n->icon, strlen(n->icon));
+                tx += text_h + DOI_PADDING;
         }
 
         if (n->summary && n->summary[0])
-                xft_draw_utf8(xd, font, &fg, tx, cur_y,
-                        n->summary, strlen(n->summary));
+                XftDrawStringUtf8(xd, &fg, font, tx, cur_y,
+                        (const FcChar8*)n->summary, strlen(n->summary));
 
         if (show_body && n->body && n->body[0]) {
                 const char* line = n->body;
                 const char* nl;
-                cur_y += text_h + BND_PADDING;
+                cur_y += text_h + DOI_PADDING;
                 while (line && *line) {
                         nl = strchr(line, '\n');
-                        int len = nl ? (int)(nl - line) : (int)strlen(line);
+                        int len = nl ? (int)(nl-line) : (int)strlen(line);
                         if (len > 0)
-                                xft_draw_utf8(xd, font, &fg, tx, cur_y,
-                                        line, len);
-                        cur_y += text_h + BND_PADDING;
-                        line = nl ? nl + 1 : NULL;
+                                XftDrawStringUtf8(xd, &fg, font, tx, cur_y,
+                                        (const FcChar8*)line, len);
+                        cur_y += text_h + DOI_PADDING;
+                        line = nl ? nl+1 : NULL;
                 }
         }
 
-        if (n->show_bar)
+        if (n->show_bar) {
                 draw_bar(dpy, win, gc,
-                        BND_MARGIN + border,
-                        cur_y + BND_PADDING,
+                        DOI_MARGIN + border,
+                        cur_y + DOI_PADDING,
                         n->bar_value, screen);
+        }
 
         XftColorFree(dpy, vis, cmap, &fg);
         XftDrawDestroy(xd);
+        XFlush(dpy);
+}
+
+/* path of update file for this notification child */
+static void update_path(char* buf, size_t sz, pid_t pid) {
+        const char* home = getenv("HOME");
+        snprintf(buf, sz, "%s/.doi/update.%d", home ? home : "/tmp", (int)pid);
 }
 
 int notify(Notification* n) {
@@ -151,9 +153,8 @@ int notify(Notification* n) {
         struct timeval rtv;
         struct timeval* tv = &rtv;
         int timeout, border;
-        fd_set in_fds;
         int win_x, win_y, win_w, win_h, screen;
-        int text_h, body_h;
+        int text_h;
         Window win;
         XEvent ev;
         Display* dpy;
@@ -168,16 +169,21 @@ int notify(Notification* n) {
         const char* border_color;
         int show_icon, show_body;
         int mapped = 0;
+        char upd_path[512];
 
         setlocale(LC_ALL, getenv("LANG"));
+        signal(SIGUSR1, handle_usr1);
+        signal(SIGUSR2, handle_usr2);
 
-        bg           = (n->bg)           ? n->bg           : BND_BG;
-        fg           = (n->fg)           ? n->fg           : BND_FG;
-        border_color = (n->border_color) ? n->border_color : BND_BORDER_COLOR;
-        border       = (n->border >= 0)  ? n->border       : BND_BORDER;
-        timeout      = (n->timeout > 0)  ? n->timeout      : BND_TIMEOUT;
-        show_icon    = (n->show_icon >= 0) ? n->show_icon  : BND_SHOW_ICON;
-        show_body    = (n->show_body >= 0) ? n->show_body  : BND_SHOW_BODY;
+        bg           = n->bg           ? n->bg           : DOI_BG;
+        fg           = n->fg           ? n->fg           : DOI_FG;
+        border_color = n->border_color ? n->border_color : DOI_BORDER_COLOR;
+        border       = n->border >= 0  ? n->border       : DOI_BORDER;
+        timeout      = n->timeout > 0  ? n->timeout      : DOI_TIMEOUT;
+        show_icon    = n->show_icon >= 0 ? n->show_icon  : DOI_SHOW_ICON;
+        show_body    = n->show_body >= 0 ? n->show_body  : DOI_SHOW_BODY;
+
+        update_path(upd_path, sizeof(upd_path), getpid());
 
         w_log("notify: summary=%s body=%s bg=%s fg=%s border=%d pos=%d,%d bar=%d val=%d",
                 n->summary ? n->summary : "",
@@ -189,56 +195,56 @@ int notify(Notification* n) {
         if (!dpy) { w_log("ERROR: cannot open display."); return 1; }
         screen = DefaultScreen(dpy);
 
-        font = XftFontOpenName(dpy, screen, BND_FONT);
-        if (!font) {
-                w_log("WARNING: font '%s' not found, using fallback", BND_FONT);
+        font = XftFontOpenName(dpy, screen, DOI_FONT);
+        if (!font)
                 font = XftFontOpenName(dpy, screen, "monospace:size=10");
+        if (!font) {
+                w_log("ERROR: no font.");
+                XCloseDisplay(dpy);
+                return 1;
         }
-        if (!font) { w_log("ERROR: no font available."); XCloseDisplay(dpy); return 1; }
 
         text_h = font->ascent + font->descent;
 
-        /* measure summary width */
-        int text_w = 0, body_w = 0;
+        /* measure widths */
+        int text_w = 0, body_w = 0, body_h = 0;
         if (n->summary && n->summary[0]) {
                 XftTextExtentsUtf8(dpy, font,
                         (const FcChar8*)n->summary, strlen(n->summary), &ext);
                 text_w = ext.xOff;
         }
-
-        body_h = 0;
         if (show_body && n->body && n->body[0]) {
                 const char* line = n->body;
                 const char* nl;
                 int lines = 0;
                 while (line) {
                         nl = strchr(line, '\n');
-                        int len = nl ? (int)(nl - line) : (int)strlen(line);
+                        int len = nl ? (int)(nl-line) : (int)strlen(line);
                         if (len > 0) {
                                 XftTextExtentsUtf8(dpy, font,
                                         (const FcChar8*)line, len, &ext);
                                 if (ext.xOff > body_w) body_w = ext.xOff;
                         }
                         lines++;
-                        line = nl ? nl + 1 : NULL;
+                        line = nl ? nl+1 : NULL;
                 }
-                body_h = lines * (text_h + BND_PADDING);
+                body_h = lines * (text_h + DOI_PADDING);
         }
 
-        win_w = (BND_MARGIN + border) * 2 + BND_PADDING * 2;
+        win_w = (DOI_MARGIN + border) * 2 + DOI_PADDING * 2;
         if (show_icon && n->icon && n->icon[0])
-                win_w += BND_ICON_SIZE + BND_PADDING;
+                win_w += text_h + DOI_PADDING;
         win_w += (text_w > body_w ? text_w : body_w);
         {
                 int maxw = (int)(DisplayWidth(dpy, screen) * 0.4);
                 if (win_w > maxw) win_w = maxw;
         }
-        if (n->show_bar && win_w < BND_BAR_WIDTH + (BND_MARGIN + border) * 2)
-                win_w = BND_BAR_WIDTH + (BND_MARGIN + border) * 2;
+        if (n->show_bar && win_w < DOI_BAR_WIDTH + (DOI_MARGIN + border) * 2)
+                win_w = DOI_BAR_WIDTH + (DOI_MARGIN + border) * 2;
 
-        win_h = (BND_MARGIN + border) * 2 + text_h;
-        if (body_h)      win_h += body_h + BND_PADDING;
-        if (n->show_bar) win_h += BND_BAR_HEIGHT + BND_PADDING * 2;
+        win_h = (DOI_MARGIN + border) * 2 + text_h;
+        if (body_h)      win_h += body_h + DOI_PADDING;
+        if (n->show_bar) win_h += DOI_BAR_HEIGHT + DOI_PADDING * 2;
 
         win_x = calc_x(dpy, screen, win_w, n->pos_x);
         win_y = calc_y(dpy, screen, win_h, n->pos_y, n->stack_index);
@@ -271,11 +277,50 @@ int notify(Notification* n) {
         XFlush(dpy);
 
         while (1) {
+                fd_set in_fds;
                 FD_ZERO(&in_fds);
                 FD_SET(x11_fd, &in_fds);
 
+                /* check exit signal */
+                if (g_exit) {
+                        unlink(upd_path);
+                        XftFontClose(dpy, font);
+                        XCloseDisplay(dpy);
+                        return 0;
+                }
+
+                /* check update signal — read new values from file */
+                if (g_update) {
+                        g_update = 0;
+                        FILE* f = fopen(upd_path, "r");
+                        if (f) {
+                                NotifUpdate u;
+                                if (fread(&u, sizeof(u), 1, f) == 1) {
+                                        if (u.summary[0])
+                                                n->summary = strdup(u.summary);
+                                        if (u.body[0])
+                                                n->body = strdup(u.body);
+                                        n->bar_value = u.bar_value;
+                                        n->show_bar  = u.show_bar;
+                                        /* reset timeout */
+                                        if (tv) {
+                                                tv->tv_sec  = timeout;
+                                                tv->tv_usec = 0;
+                                        }
+                                }
+                                fclose(f);
+                        }
+                        /* clear bg and redraw */
+                        XClearWindow(dpy, win);
+                        repaint(dpy, screen, win, gc, font, n,
+                                win_w, win_h, text_h,
+                                border, fg, bg, border_color,
+                                show_icon, show_body);
+                }
+
                 if (!XPending(dpy)) {
-                        if (!select(x11_fd + 1, &in_fds, NULL, NULL, tv)) {
+                        if (!select(x11_fd+1, &in_fds, NULL, NULL, tv)) {
+                                unlink(upd_path);
                                 XftFontClose(dpy, font);
                                 XCloseDisplay(dpy);
                                 w_log("timeout");
@@ -288,22 +333,20 @@ int notify(Notification* n) {
                         switch (ev.type) {
                         case MapNotify:
                                 mapped = 1;
-                                draw_content(dpy, screen, win, gc, font, n,
+                                repaint(dpy, screen, win, gc, font, n,
                                         win_w, win_h, text_h,
-                                        border, fg, border_color,
+                                        border, fg, bg, border_color,
                                         show_icon, show_body);
-                                XFlush(dpy);
                                 break;
                         case Expose:
-                                if (mapped && ev.xexpose.count == 0) {
-                                        draw_content(dpy, screen, win, gc, font, n,
+                                if (mapped && ev.xexpose.count == 0)
+                                        repaint(dpy, screen, win, gc, font, n,
                                                 win_w, win_h, text_h,
-                                                border, fg, border_color,
+                                                border, fg, bg, border_color,
                                                 show_icon, show_body);
-                                        XFlush(dpy);
-                                }
                                 break;
                         case ButtonPress:
+                                unlink(upd_path);
                                 XftFontClose(dpy, font);
                                 XCloseDisplay(dpy);
                                 return 0;

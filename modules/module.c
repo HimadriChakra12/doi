@@ -174,7 +174,7 @@ int doi_notify(const char* summary, const char* body,
         opts.icon     = icon;
         opts.timeout  = timeout_ms;
         opts.border   = -1;
-        opts.pos_x    = BND_POS_X;
-        opts.pos_y    = BND_POS_Y;
+        opts.pos_x    = DOI_POS_X;
+        opts.pos_y    = DOI_POS_Y;
         return doi_notify_opts(&opts);
 }

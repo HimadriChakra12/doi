@@ -12,12 +12,12 @@
 #include "../config.h"
 
 /* slot tracker: counts active notifications per (pos_x, pos_y) pair */
-#define BND_MAX_CHILDREN 64
+#define DOI_MAX_CHILDREN 64
 static int  slot_count[3][3] = {{0}};
-static pid_t child_pid[BND_MAX_CHILDREN];
-static int   child_px[BND_MAX_CHILDREN];
-static int   child_py[BND_MAX_CHILDREN];
-static int   child_slot[BND_MAX_CHILDREN];
+static pid_t child_pid[DOI_MAX_CHILDREN];
+static int   child_px[DOI_MAX_CHILDREN];
+static int   child_py[DOI_MAX_CHILDREN];
+static int   child_slot[DOI_MAX_CHILDREN];
 static int   child_count = 0;
 
 static void sigchld_handler(int a) {
@@ -59,7 +59,7 @@ static int acquire_slot(int pos_x, int pos_y) {
 }
 
 static void register_child(pid_t p, int pos_x, int pos_y, int slot) {
-        if (child_count < BND_MAX_CHILDREN) {
+        if (child_count < DOI_MAX_CHILDREN) {
                 child_pid[child_count]  = p;
                 child_px[child_count]   = pos_x;
                 child_py[child_count]   = pos_y;
@@ -69,11 +69,11 @@ static void register_child(pid_t p, int pos_x, int pos_y, int slot) {
 }
 
 /* replace tracking: keyed by notif_id OR by app+summary string */
-#define BND_MAX_IDS 64
+#define DOI_MAX_IDS 64
 
-static dbus_uint32_t id_map_id[BND_MAX_IDS];
-static int           id_map_idx[BND_MAX_IDS];
-static char          id_map_key[BND_MAX_IDS][128]; /* "app\0summary" */
+static dbus_uint32_t id_map_id[DOI_MAX_IDS];
+static int           id_map_idx[DOI_MAX_IDS];
+static char          id_map_key[DOI_MAX_IDS][128]; /* "app\0summary" */
 static int           id_map_count = 0;
 
 static void make_key(char* out, size_t sz,
@@ -83,7 +83,7 @@ static void make_key(char* out, size_t sz,
 
 static void id_map_add(dbus_uint32_t id, int child_idx,
                 const char* app, const char* summary) {
-        if (id_map_count < BND_MAX_IDS) {
+        if (id_map_count < DOI_MAX_IDS) {
                 id_map_id[id_map_count]  = id;
                 id_map_idx[id_map_count] = child_idx;
                 make_key(id_map_key[id_map_count],
@@ -92,46 +92,78 @@ static void id_map_add(dbus_uint32_t id, int child_idx,
         }
 }
 
-static int do_replace(int i, int* out_px, int* out_py) {
+static void write_update(pid_t pid, const Notification* n) {
+        char path[512];
+        const char* home = getenv("HOME");
+        FILE* f;
+        NotifUpdate u;
+        snprintf(path, sizeof(path), "%s/.doi/update.%d",
+                home ? home : "/tmp", (int)pid);
+        f = fopen(path, "wb");
+        if (!f) return;
+        memset(&u, 0, sizeof(u));
+        if (n->summary) strncpy(u.summary, n->summary, sizeof(u.summary)-1);
+        if (n->body)    strncpy(u.body,    n->body,    sizeof(u.body)-1);
+        u.bar_value = n->bar_value;
+        u.show_bar  = n->show_bar;
+        fwrite(&u, sizeof(u), 1, f);
+        fclose(f);
+}
+
+static int do_replace(int i, int* out_px, int* out_py,
+                const Notification* new_n) {
         int idx = id_map_idx[i];
-        if (idx < child_count) {
-                int slot = child_slot[idx];
-                *out_px  = child_px[idx];
-                *out_py  = child_py[idx];
-                kill(child_pid[idx], SIGTERM);
-                child_pid[idx]  = child_pid[child_count-1];
-                child_px[idx]   = child_px[child_count-1];
-                child_py[idx]   = child_py[child_count-1];
-                child_slot[idx] = child_slot[child_count-1];
-                child_count--;
+        if (idx >= child_count) return -1;
+
+        int slot = child_slot[idx];
+        *out_px  = child_px[idx];
+        *out_py  = child_py[idx];
+
+        if (new_n) {
+                /* update in place: write file then signal SIGUSR2 */
+                write_update(child_pid[idx], new_n);
+                kill(child_pid[idx], SIGUSR2);
+                /* remove old id_map entry — caller will re-add with new notif_id */
                 id_map_id[i]  = id_map_id[id_map_count-1];
                 id_map_idx[i] = id_map_idx[id_map_count-1];
                 memcpy(id_map_key[i], id_map_key[id_map_count-1],
                         sizeof(id_map_key[0]));
                 id_map_count--;
-                return slot;
+                return -(idx + 10); /* encode child idx: caller extracts as -(r+10) */
         }
-        return -1;
+
+        /* no new content — kill and free slot */
+        kill(child_pid[idx], SIGUSR1);
+        child_pid[idx]  = child_pid[child_count-1];
+        child_px[idx]   = child_px[child_count-1];
+        child_py[idx]   = child_py[child_count-1];
+        child_slot[idx] = child_slot[child_count-1];
+        child_count--;
+        id_map_id[i]  = id_map_id[id_map_count-1];
+        id_map_idx[i] = id_map_idx[id_map_count-1];
+        memcpy(id_map_key[i], id_map_key[id_map_count-1],
+                sizeof(id_map_key[0]));
+        id_map_count--;
+        return slot;
 }
 
 /* Kill existing child: first by replace_id, then by app+summary key */
 static int replace_existing(dbus_uint32_t replace_id,
                 const char* app, const char* summary,
-                int* out_px, int* out_py) {
+                int* out_px, int* out_py,
+                const Notification* new_n) {
         char key[128];
         int i;
-        /* try by id first */
         if (replace_id > 0) {
                 for (i = 0; i < id_map_count; ++i) {
                         if (id_map_id[i] == replace_id)
-                                return do_replace(i, out_px, out_py);
+                                return do_replace(i, out_px, out_py, new_n);
                 }
         }
-        /* fall back to app+summary key */
         make_key(key, sizeof(key), app, summary);
         for (i = 0; i < id_map_count; ++i) {
                 if (strcmp(id_map_key[i], key) == 0)
-                        return do_replace(i, out_px, out_py);
+                        return do_replace(i, out_px, out_py, new_n);
         }
         return -1;
 }
@@ -298,7 +330,7 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                 n.app_name     = app_name;
                 /* skip file:// paths unless Imlib2 is available
                  * to avoid rendering raw paths as text */
-#ifdef BND_USE_IMLIB2
+#ifdef DOI_USE_IMLIB2
                 n.icon = app_icon;
 #else
                 n.icon = (app_icon[0] && app_icon[0] != '/'
@@ -309,9 +341,9 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                 n.fg           = NULL;
                 n.border_color = NULL;
                 n.border       = -1;
-                n.timeout      = BND_TIMEOUT;
-                n.pos_x        = BND_POS_X;
-                n.pos_y        = BND_POS_Y;
+                n.timeout      = DOI_TIMEOUT;
+                n.pos_x        = DOI_POS_X;
+                n.pos_y        = DOI_POS_Y;
                 n.show_icon    = -1;
                 n.show_body    = -1;
                 n.show_bar     = 0;
@@ -339,23 +371,29 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                 {
                         int rpx = n.pos_x, rpy = n.pos_y;
                         int rslot = replace_existing(replace_id,
-                                app_name, summary, &rpx, &rpy);
-                        if (rslot >= 0) {
+                                app_name, summary, &rpx, &rpy, &n);
+                        if (rslot <= -10) {
+                                /* updated in place — re-register with new notif_id */
+                                int cidx = -(rslot + 10);
+                                id_map_add(notif_id, cidx, app_name, summary);
+                                w_log("updated in place cidx=%d pos=%d,%d", cidx, rpx, rpy);
+                                goto send_reply;
+                        } else if (rslot >= 0) {
                                 n.pos_x       = rpx;
                                 n.pos_y       = rpy;
                                 n.stack_index = rslot;
                                 w_log("replacing slot %d pos=%d,%d", rslot, rpx, rpy);
                         } else {
-#if BND_STACK_LIMIT > 0
+#if DOI_STACK_LIMIT > 0
                                 /* check if we are at the limit */
-                                if (slot_count[n.pos_x][n.pos_y] >= BND_STACK_LIMIT) {
+                                if (slot_count[n.pos_x][n.pos_y] >= DOI_STACK_LIMIT) {
                                         /* update the overflow indicator in the last slot */
                                         int overflow = slot_count[n.pos_x][n.pos_y]
-                                                        - BND_STACK_LIMIT + 1;
+                                                        - DOI_STACK_LIMIT + 1;
                                         char obody[64];
                                         Notification ov;
                                         snprintf(obody, sizeof(obody),
-                                                BND_STACK_OVERFLOW, overflow);
+                                                DOI_STACK_OVERFLOW, overflow);
                                         memset(&ov, 0, sizeof(Notification));
                                         ov.summary      = obody;
                                         ov.body         = "";
@@ -369,13 +407,13 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                                         ov.show_icon    = 0;
                                         ov.show_body    = 0;
                                         ov.show_bar     = 0;
-                                        ov.stack_index  = BND_STACK_LIMIT - 1;
+                                        ov.stack_index  = DOI_STACK_LIMIT - 1;
                                         /* replace existing overflow indicator if present */
                                         {
                                                 int ox, oy;
                                                 replace_existing(0,
                                                         "doi-overflow", "overflow",
-                                                        &ox, &oy);
+                                                        &ox, &oy, NULL);
                                         }
                                         pid = fork();
                                         if (pid == 0) {
@@ -383,7 +421,7 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                                                 exit(EXIT_SUCCESS);
                                         }
                                         register_child(pid, n.pos_x, n.pos_y,
-                                                BND_STACK_LIMIT - 1);
+                                                DOI_STACK_LIMIT - 1);
                                         id_map_add(notif_id, child_count - 1,
                                                 "doi-overflow", "overflow");
                                         slot_count[n.pos_x][n.pos_y]++;

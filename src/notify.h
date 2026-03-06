@@ -6,19 +6,27 @@ typedef struct {
         char* body;
         char* app_name;
         char* icon;
-        char* bg;           /* NULL = use BND_BG */
-        char* fg;           /* NULL = use BND_FG */
-        char* border_color; /* NULL = use BND_BORDER_COLOR */
-        int   border;       /* px, -1 = use BND_BORDER */
-        int   timeout;      /* seconds, 0 = use BND_TIMEOUT */
-        int   pos_x;        /* BND_LEFT / BND_CENTER / BND_RIGHT */
-        int   pos_y;        /* BND_TOP  / BND_MIDDLE / BND_BOTTOM */
+        char* bg;           /* NULL = use DOI_BG */
+        char* fg;           /* NULL = use DOI_FG */
+        char* border_color; /* NULL = use DOI_BORDER_COLOR */
+        int   border;       /* px, -1 = use DOI_BORDER */
+        int   timeout;      /* seconds, 0 = use DOI_TIMEOUT */
+        int   pos_x;
+        int   pos_y;
         int   show_icon;    /* -1 = use config, 0 = hide, 1 = show */
         int   show_body;    /* -1 = use config, 0 = hide, 1 = show */
         int   show_bar;
         int   bar_value;    /* 0-100 */
-        int   stack_index;  /* vertical slot, 0 = first */
+        int   stack_index;
 } Notification;
+
+/* update file format: written by daemon, read by child via inotify/poll */
+typedef struct {
+        char    summary[256];
+        char    body[512];
+        int     bar_value;
+        int     show_bar;
+} NotifUpdate;
 
 int notify(Notification* n);
 
