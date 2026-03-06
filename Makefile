@@ -1,12 +1,12 @@
 # doi Makefile
 # Usage:
-#   make                          - build doid and doi
+#   make                          - build doii and doi
 #   make MODULES="volume bright"  - build with modules
 #   make MODULES=all              - build all modules
-#   make install                  - install doid + doi
+#   make install                  - install doii + doi
 #   make install-modules          - install built modules
 #   make install-all              - install everything
-#   sudo make himadri             - build + install + modules + restart doid
+#   sudo make himadri             - build + install + modules + restart doii
 #   make clean
 
 CC      = gcc
@@ -15,7 +15,7 @@ CFLAGS  = -Wall -Wextra -pedantic -Wmissing-prototypes \
           -D_POSIX_C_SOURCE=200809L -std=c99
 
 DBUS_FLAGS  = $(shell pkg-config --cflags --libs dbus-1)
-X11_FLAGS   = -lX11
+X11_FLAGS   = -lX11 -lXft $(shell pkg-config --cflags --libs fontconfig)
 
 # Uncomment to enable image icon support via Imlib2:
 # IMLIB_FLAGS = -DBND_USE_IMLIB2 $(shell pkg-config --cflags --libs imlib2)
@@ -41,7 +41,7 @@ endif
 HIMADRI_MODULES = bright media
 
 OUTPUT_C = doi
-OUTPUT_D = doid
+OUTPUT_D = doii
 
 PREFIX    = /usr/local
 BINDIR    = $(PREFIX)/bin
@@ -77,9 +77,9 @@ clean:
 
 install: $(OUTPUT_C) $(OUTPUT_D)
 	@install -Dm755 $(OUTPUT_C) $(BINDIR)/doi
-	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doid
+	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doii
 	@echo "installed doi -> $(BINDIR)/doi"
-	@echo "installed doid -> $(BINDIR)/doid"
+	@echo "installed doii -> $(BINDIR)/doii"
 
 install-modules:
 	@for m in $(MODULES); do \
@@ -101,13 +101,13 @@ install-modules:
 
 install-all: install install-modules
 
-# himadri: build bright + media, install everything, restart doid
+# himadri: build bright + media, install everything, restart doii
 himadri: MODULES = $(HIMADRI_MODULES)
 himadri: $(OUTPUT_C) $(OUTPUT_D) \
          $(foreach m,$(HIMADRI_MODULES),doi-$(m))
-	@echo "--- installing doi + doid ---"
+	@echo "--- installing doi + doii ---"
 	@install -Dm755 $(OUTPUT_C) $(BINDIR)/doi
-	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doid
+	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doii
 	@echo "--- installing modules: $(HIMADRI_MODULES) ---"
 	@for m in $(HIMADRI_MODULES); do \
 		install -Dm755 "doi-$$m" "$(BINDIR)/doi-$$m"; \
@@ -117,8 +117,8 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) \
 	@install -Dm755 $(MOD)/media.sh      $(BINDIR)/doi-media-sh
 	@echo "--- creating ~/.doi directory ---"
 	@su $(SUDO_USER) -c "mkdir -p /home/$(SUDO_USER)/.doi"
-	@echo "--- restarting doid ---"
-	@pkill doid 2>/dev/null || true
+	@echo "--- restarting doii ---"
+	@pkill doii 2>/dev/null || true
 	@sleep 0.2
 	@DBUS_SESSION_BUS_ADDRESS="$$(cat /proc/$$(pgrep -u $(SUDO_USER) i3 \
 		| head -1)/environ 2>/dev/null \
@@ -131,7 +131,25 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) \
 		| grep ^DISPLAY= \
 		| cut -d= -f2-)" \
 	 HOME="/home/$(SUDO_USER)" \
-	 su $(SUDO_USER) -c "$(BINDIR)/doid" || true
+	 su $(SUDO_USER) -c "$(BINDIR)/doii" || true
 	@echo "--- done ---"
-	@echo "doi, doid, doi-bright, doi-media, doi-screenshot installed."
-	@echo "doid restarted."
+	@echo "doi, doii, doi-bright, doi-media, doi-screenshot installed."
+	@echo "doii restarted."
+
+# rename doi -> doi, doii -> doid everywhere (contents + filenames)
+rename-doi:
+	@echo "--- rewriting file contents ---"
+	@find . -type f | xargs grep -l 'doii\|doi' 2>/dev/null | while read f; do \
+		sed -i 's/doii/doid/g; s/doi/doi/g' "$$f"; \
+	done
+	@echo "--- renaming files and directories ---"
+	@find . -depth | while read f; do \
+		dir=$$(dirname "$$f"); \
+		base=$$(basename "$$f"); \
+		newbase=$$(echo "$$base" | sed 's/doii/doid/g; s/doi/doi/g'); \
+		if [ "$$base" != "$$newbase" ]; then \
+			mv "$$f" "$$dir/$$newbase"; \
+			echo "renamed: $$f -> $$dir/$$newbase"; \
+		fi; \
+	done
+	@echo "--- done: doi -> doi, doii -> doid ---"

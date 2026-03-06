@@ -327,6 +327,10 @@ static DBusHandlerResult handle_message(DBusConnection* conn,
                                 n.timeout = expire_timeout / 1000;
                 }
 
+                /* ignore noisy system notifications */
+                if (strcmp(app_name, "flameshot") == 0)
+                        goto send_reply;
+
                 w_log("Notify: app=%s summary=%s pos=%d,%d bg=%s bar=%d val=%d replace=%u",
                         app_name, summary, n.pos_x, n.pos_y,
                         n.bg ? n.bg : "(default)",

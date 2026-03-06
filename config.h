@@ -1,10 +1,10 @@
-/* bnd configuration - edit and recompile to apply changes */
+/* doi configuration - edit and recompile to apply changes */
 
 /* --- log --- */
 #define BND_LOG_FILE        ".doi/log"
 
 /* --- font --- */
-#define BND_FONT            "fixed"
+#define BND_FONT  "JetBrainsMono Nerd Font:size=11:antialias=true"
 
 /* --- default notification appearance --- */
 #define BND_BG              "#282828"
@@ -40,8 +40,8 @@
 #define BND_BOTTOM          2
 
 /* --- progress bar (volume/brightness) --- */
-#define BND_BAR_WIDTH       200
-#define BND_BAR_HEIGHT      8
+#define BND_BAR_WIDTH       250
+#define BND_BAR_HEIGHT      3
 #define BND_BAR_FG          "wheat"
 #define BND_BAR_BG          "#444444"
 
