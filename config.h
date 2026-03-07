@@ -38,12 +38,12 @@
 #define DOI_BAR_FG        "wheat"
 #define DOI_BAR_RADIUS    3
 /* ── stacking ─────────────────────────────────────────────────────────── */
-#define DOI_STACK_GAP      8
+#define DOI_STACK_GAP      10
 #define DOI_STACK_HEIGHT   70
 #define DOI_STACK_LIMIT    5
 #define DOI_STACK_OVERFLOW "… and %d more"
 /* ── ignored apps ─────────────────────────────────────────────────────── */
-#define DOI_IGNORE_APPS   "flameshot"
+#define DOI_IGNORE_APPS   ""
 /* ═══════════════════════════════════════════════════════════════════════ */
 /*  MODULE OVERRIDES                                                       */
 /* ═══════════════════════════════════════════════════════════════════════ */

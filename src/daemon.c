@@ -23,6 +23,8 @@ typedef struct {
         pid_t pid;
         int   write_fd;   /* write end of pipe to child */
         int   stack_idx;
+        int   pos_x;
+        int   pos_y;
 } Slot;
 
 static Slot   slots[MAX_SLOTS];
@@ -36,9 +38,14 @@ static void sigchld_handler(int sig) {
         (void)sig;
         while ((p = waitpid(-1, NULL, WNOHANG)) > 0) {
                 for (i = 0; i < slot_count; i++) {
+                        int px, py;
                         if (slots[i].pid != p) continue;
-                        w_log("slot %s exited unexpectedly", slots[i].key);
+                        w_log("slot %s exited", slots[i].key);
                         close(slots[i].write_fd);
+                        /* free stack position */
+                        px = slots[i].pos_x;
+                        py = slots[i].pos_y;
+                        if (stack_depth[px][py] > 0) stack_depth[px][py]--;
                         /* compact */
                         slots[i] = slots[slot_count-1];
                         slot_count--;
@@ -68,8 +75,15 @@ static Slot* new_slot(const char* key, int px, int py,
         if (slot_count >= MAX_SLOTS) return NULL;
         if (pipe(fds) < 0) return NULL;
 
+        /* assign stack index BEFORE fork so child sees correct value */
+        initial->stack_index = stack_depth[px][py]++;
+
         pid = fork();
-        if (pid < 0) { close(fds[0]); close(fds[1]); return NULL; }
+        if (pid < 0) {
+                close(fds[0]); close(fds[1]);
+                stack_depth[px][py]--;   /* undo on failure */
+                return NULL;
+        }
 
         if (pid == 0) {
                 /* child: close write end, render from read end */
@@ -86,7 +100,9 @@ static Slot* new_slot(const char* key, int px, int py,
         strncpy(s->key, key, sizeof(s->key)-1);
         s->pid      = pid;
         s->write_fd = fds[1];
-        s->stack_idx = stack_depth[px][py]++;
+        s->stack_idx = initial->stack_index;
+        s->pos_x     = px;
+        s->pos_y     = py;
         w_log("new slot key=%s pid=%d sidx=%d", key, (int)pid, s->stack_idx);
         return s;
 }
@@ -139,11 +155,11 @@ static void read_hints(DBusMessageIter* it, Notif* n) {
 #define STR_HINT(k, field) \
         if (strcmp(key,k)==0 && type==DBUS_TYPE_STRING) { \
                 const char* v; dbus_message_iter_get_basic(&var,&v); \
-                free(n->field); n->field=strdup(v); goto next; }
+                free(n->field); n->field=strdup(v); n->doi_hints=1; goto next; }
 #define INT_HINT(k, field) \
         if (strcmp(key,k)==0 && type==DBUS_TYPE_INT32) { \
                 dbus_int32_t v; dbus_message_iter_get_basic(&var,&v); \
-                n->field=(int)v; goto next; }
+                n->field=(int)v; n->doi_hints=1; goto next; }
 
                 STR_HINT("x-doi-bg",           bg)
                 STR_HINT("x-doi-fg",           fg)
@@ -248,6 +264,7 @@ static DBusHandlerResult handle(DBusConnection* conn,
                 n.pos_x      = DOI_POS_X;
                 n.pos_y      = DOI_POS_Y;
                 n.timeout    = DOI_TIMEOUT;
+                n.doi_hints  = 0;
 
                 read_hints(&args, &n);
                 dbus_message_iter_next(&args);
@@ -257,7 +274,7 @@ static DBusHandlerResult handle(DBusConnection* conn,
                         if (expire > 0) n.timeout = expire / 1000;
                 }
 
-                (void)replace_id; /* unused — slot key handles identity */
+
 
                 if (is_ignored(app_name)) {
                         free(n.summary); free(n.body);
@@ -271,16 +288,44 @@ static DBusHandlerResult handle(DBusConnection* conn,
 
                 {
                         char key[128];
-                        make_key(key, sizeof(key), app_name, n.pos_x, n.pos_y);
-                        Slot* s = find_slot(key);
-                        if (s) {
-                                /* existing child — just pipe the update */
-                                send_update(s, &n);
-                                w_log("updated slot key=%s", key);
+                        Slot* s = NULL;
+
+                        if (n.doi_hints) {
+                                /* doi module: one persistent slot per app+position */
+                                make_key(key, sizeof(key), app_name,
+                                        n.pos_x, n.pos_y);
+                                s = find_slot(key);
+                                if (s) {
+                                        send_update(s, &n);
+                                        w_log("updated slot key=%s", key);
+                                } else {
+                                        s = new_slot(key, n.pos_x, n.pos_y, &n);
+                                        if (s) send_update(s, &n);
+                                }
                         } else {
-                                /* new slot — spawn persistent child */
-                                s = new_slot(key, n.pos_x, n.pos_y, &n);
-                                if (s) send_update(s, &n);
+                                /* external app (Firefox, Edge, etc.):
+                                 * replace_id > 0 → reuse existing slot by id
+                                 * replace_id == 0 → always new slot            */
+                                if (replace_id > 0) {
+                                        snprintf(key, sizeof(key), "ext|%u",
+                                                replace_id);
+                                        s = find_slot(key);
+                                }
+                                if (s) {
+                                        send_update(s, &n);
+                                        /* rename to new id for future replaces */
+                                        snprintf(s->key, sizeof(s->key),
+                                                "ext|%u", next_id);
+                                        w_log("ext replace slot id=%u->%u",
+                                                replace_id, next_id);
+                                } else {
+                                        snprintf(key, sizeof(key), "ext|%u",
+                                                next_id);
+                                        s = new_slot(key, n.pos_x, n.pos_y, &n);
+                                        if (s) send_update(s, &n);
+                                        w_log("ext new slot key=%s app=%s",
+                                                key, app_name);
+                                }
                         }
                 }
 

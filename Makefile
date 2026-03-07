@@ -99,7 +99,11 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(HIMADRI_MODULES),doi-$(m))
 	@echo "--- creating ~/.doi ---"
 	@su $(SUDO_USER) -c "mkdir -p /home/$(SUDO_USER)/.doi"
 	@echo "--- restarting doid ---"
-	@pkill doid 2>/dev/null || true
+	@pkill -TERM doid 2>/dev/null || true
+	@sleep 0.3
+	@pkill -KILL doid 2>/dev/null || true
+	@pkill -KILL -f "doi-bright" 2>/dev/null || true
+	@pkill -KILL -f "doi-volume" 2>/dev/null || true
 	@sleep 0.2
 	@DBUS_SESSION_BUS_ADDRESS="$$(cat /proc/$$(pgrep -u $(SUDO_USER) i3 \
 		| head -1)/environ 2>/dev/null | tr '\0' '\n' \

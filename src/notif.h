@@ -25,6 +25,7 @@ typedef struct {
         char* bar_fg;
         char* bar_bg;
         int   stack_index;
+        int   doi_hints;    /* 1 if any x-doi-* hint received          */
 } Notif;
 
 /* Written to the render child's stdin pipe to trigger show/update */

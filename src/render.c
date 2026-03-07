@@ -30,7 +30,9 @@ static int win_x(Display* d, int s, int w, int px, int ox) {
 
 static int win_y(Display* d, int s, int h, int py, int oy, int idx) {
         int sh = DisplayHeight(d,s);
-        int step = h + DOI_STACK_GAP;
+        /* Use fixed step so stacking is stable regardless of window height.
+         * DOI_STACK_HEIGHT is the estimated notification height from config. */
+        int step = DOI_STACK_HEIGHT + DOI_STACK_GAP;
         if (py == DOI_TOP)    return oy + idx * step;
         if (py == DOI_BOTTOM) return sh - h - oy - idx * step;
         return (sh - h) / 2 + idx * step;
@@ -287,14 +289,10 @@ void render_loop(int read_fd, Notif* initial) {
                 if (!XPending(dpy)) {
                         int r = select(maxfd+1, &fds, NULL, NULL, tv);
                         if (r == 0) {
-                                /* timeout — hide window, wait for next update */
-                                if (visible) {
-                                        XUnmapWindow(dpy, win);
-                                        visible = 0;
-                                        tv = NULL;
-                                        XFlush(dpy);
-                                }
-                                continue;
+                                /* timeout — exit so daemon frees stack slot.
+                                 * Persistent slots (timeout==0) never reach here. */
+                                w_log("render: timeout pid=%d", (int)getpid());
+                                goto done;
                         }
                         if (r < 0) continue;  /* EINTR or other — loop */
 
@@ -312,12 +310,14 @@ void render_loop(int read_fd, Notif* initial) {
                                                 pos_x, pos_y, stack_idx);
                                 break;
                         case ButtonPress:
-                                XUnmapWindow(dpy, win);
-                                visible = 0;
-                                tv = NULL;
-                                XFlush(dpy);
-                                break;
+                                goto done;
                         }
                 }
         }
+done:
+        if (visible) XUnmapWindow(dpy, win);
+        XFreeGC(dpy, gc);
+        XftFontClose(dpy, font);
+        XDestroyWindow(dpy, win);
+        XCloseDisplay(dpy);
 }
