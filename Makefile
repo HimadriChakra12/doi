@@ -113,4 +113,5 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(HIMADRI_MODULES),doi-$(m))
 		| grep ^DISPLAY= | cut -d= -f2-)" \
 	 HOME="/home/$(SUDO_USER)" \
 	 su $(SUDO_USER) -c "$(BINDIR)/doid" || true
+	@su $(SUDO_USER) -c "$(BINDIR)/doid" || true
 	@echo "--- done ---"

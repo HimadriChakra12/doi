@@ -90,9 +90,26 @@ static void paint(Display* dpy, int screen, Window win, GC gc,
         XftColorAllocName(dpy, DefaultVisual(dpy,screen),
                 DefaultColormap(dpy,screen), fg, &col);
 
-        int inner = border + DOI_MARGIN + DOI_PADDING;
-        int cur_y = inner + text_h - 2;
-        int tx    = inner;
+        int border_m = border + DOI_MARGIN;
+        int tx = border_m + DOI_PADDING;
+
+        /* measure content height for vertical centering */
+        int body_lines = 0;
+        if (show_body && u->body[0]) {
+                const char* p = u->body;
+                while (p) {
+                        body_lines++;
+                        p = strchr(p, '\n');
+                        if (p) p++;
+                }
+        }
+        int content_h = text_h
+                + (body_lines ? body_lines * (text_h + DOI_PADDING) : 0)
+                + (u->show_bar ? bh + DOI_PADDING * 2 : 0);
+
+        /* vertically center the block within win_h */
+        int cur_y = border_m + (win_h - border_m * 2 - content_h) / 2 + text_h;
+        if (cur_y < border_m + text_h) cur_y = border_m + text_h;
 
         if (show_icon && u->icon[0]) {
                 int iw = utf8w(dpy, font, u->icon, strlen(u->icon));
@@ -105,7 +122,7 @@ static void paint(Display* dpy, int screen, Window win, GC gc,
                 XftDrawStringUtf8(xd, &col, font, tx, cur_y,
                         (const FcChar8*)u->summary, strlen(u->summary));
 
-        cur_y += text_h + DOI_PADDING;
+        cur_y += DOI_PADDING;
 
         if (show_body && u->body[0]) {
                 const char* line = u->body;
@@ -113,21 +130,25 @@ static void paint(Display* dpy, int screen, Window win, GC gc,
                 while (line && *line) {
                         nl = strchr(line, '\n');
                         int len = nl ? (int)(nl-line) : (int)strlen(line);
+                        cur_y += text_h;
                         if (len > 0)
-                                XftDrawStringUtf8(xd, &col, font, inner, cur_y,
+                                XftDrawStringUtf8(xd, &col, font,
+                                        border_m + DOI_PADDING, cur_y,
                                         (const FcChar8*)line, len);
-                        cur_y += text_h + DOI_PADDING;
+                        cur_y += DOI_PADDING;
                         line = nl ? nl+1 : NULL;
                 }
         }
 
         if (u->show_bar) {
                 int filled = bw * u->bar_value / 100;
+                cur_y += DOI_PADDING;
                 XSetForeground(dpy, gc, xcolor(dpy, screen, bbg));
-                XFillRectangle(dpy, win, gc, inner, cur_y, bw, bh);
+                XFillRectangle(dpy, win, gc, border_m + DOI_PADDING, cur_y, bw, bh);
                 if (filled > 0) {
                         XSetForeground(dpy, gc, xcolor(dpy, screen, bfg));
-                        XFillRectangle(dpy, win, gc, inner, cur_y, filled, bh);
+                        XFillRectangle(dpy, win, gc,
+                                border_m + DOI_PADDING, cur_y, filled, bh);
                 }
         }
 
@@ -182,9 +203,13 @@ static void measure(Display* dpy, XftFont* font, int text_h,
                 + (u->show_bar ? bh + DOI_PADDING*2 : 0)
                 + border + DOI_MARGIN;
 
-        /* apply min_height if set */
+        /* apply per-notification min_height */
         if (u->min_height > 0 && win_h < u->min_height)
                 win_h = u->min_height;
+        /* enforce uniform notification height */
+        if (win_h < DOI_NOTIF_HEIGHT)
+                win_h = DOI_NOTIF_HEIGHT;
+        win_h = DOI_NOTIF_HEIGHT;   /* hard-fix: all windows same height */
 
         (void)pos_x; (void)pos_y; (void)stack_idx;
         *out_w = win_w;
