@@ -21,7 +21,7 @@
 #define DOI_BORDER_COLOR  "wheat"
 #define DOI_BORDER        1
 #define DOI_PADDING       10         /* nearest int to 9.5 — must be integer */
-#define DOI_MARGIN        10
+#define DOI_MARGIN        3
 #define DOI_MIN_WIDTH     260
 #define DOI_MAX_WIDTH_PCT 40
 #define DOI_POS_X         DOI_RIGHT
