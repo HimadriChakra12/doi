@@ -1,124 +1,60 @@
 /*
- * doi-volume: volume control + notification
+ * doi-volume — volume notification module
  * Usage: doi-volume [up|down|mute|get]
- * Config: BND_VOLUME_BACKEND, BND_VOLUME_CARD, BND_VOLUME_CHANNEL in config.h
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "module.h"
 
-#if BND_VOLUME_BACKEND == BND_VOLUME_ALSA
-#include <alsa/asoundlib.h>
-
-static int get_volume(void) {
-        snd_mixer_t* handle;
-        snd_mixer_elem_t* elem;
-        snd_mixer_selem_id_t* sid;
-        long vol, min, max;
-
-        snd_mixer_open(&handle, 0);
-        snd_mixer_attach(handle, BND_VOLUME_CARD);
-        snd_mixer_selem_register(handle, NULL, NULL);
-        snd_mixer_load(handle);
-
-        snd_mixer_selem_id_alloca(&sid);
-        snd_mixer_selem_id_set_index(sid, 0);
-        snd_mixer_selem_id_set_name(sid, BND_VOLUME_CHANNEL);
-        elem = snd_mixer_find_selem(handle, sid);
-
-        snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
-        snd_mixer_selem_get_playback_volume(elem,
-                SND_MIXER_SCHN_FRONT_LEFT, &vol);
-        snd_mixer_close(handle);
-
-        return (int)(((vol - min) * 100) / (max - min));
+static int get_vol(void) {
+        FILE* p = popen("pamixer --get-volume 2>/dev/null", "r");
+        int v = 0;
+        if (p) { fscanf(p, "%d", &v); pclose(p); }
+        return v;
 }
 
-static void set_volume(int delta) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd),
-                "amixer -q set %s %d%%%s",
-                BND_VOLUME_CHANNEL,
-                abs(delta),
-                delta >= 0 ? "+" : "-");
-        system(cmd);
+static int get_muted(void) {
+        FILE* p = popen("pamixer --get-mute 2>/dev/null", "r");
+        char buf[8] = {0};
+        if (p) { fscanf(p, "%7s", buf); pclose(p); }
+        return strcmp(buf, "true") == 0;
 }
 
-static void toggle_mute(void) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd),
-                "amixer -q set %s toggle", BND_VOLUME_CHANNEL);
-        system(cmd);
+static void notify(int pct, int muted) {
+        char body[32];
+        snprintf(body, sizeof(body), "%d%%", pct);
+        DoiOpts o = {0};
+        o.summary      = muted ? "󰝟  Volume" : "󰕾  Volume";
+        o.body         = body;
+        o.bg           = DOI_VOLUME_BG;
+        o.fg           = DOI_VOLUME_FG;
+        o.border_color = DOI_VOLUME_BORDER_COLOR;
+        o.border       = DOI_VOLUME_BORDER;
+        o.timeout      = DOI_VOLUME_TIMEOUT * 1000;
+        o.pos_x        = DOI_VOLUME_POS_X;
+        o.pos_y        = DOI_VOLUME_POS_Y;
+        o.min_width    = DOI_VOLUME_MIN_WIDTH;
+        o.show_bar     = !muted;
+        o.bar_value    = pct;
+        o.bar_width    = DOI_VOLUME_BAR_WIDTH;
+        o.bar_height   = DOI_VOLUME_BAR_HEIGHT;
+        o.min_height   = DOI_VOLUME_MIN_HEIGHT;
+        o.offset_x     = DOI_VOLUME_OFFSET_X;
+        o.offset_y     = DOI_VOLUME_OFFSET_Y;
+        o.bar_fg       = DOI_VOLUME_BAR_FG;
+        o.bar_bg       = DOI_VOLUME_BAR_BG;
+        doi_notify(&o);
 }
-
-#else /* PulseAudio */
-
-static int get_volume(void) {
-        FILE* p = popen("pactl get-sink-volume @DEFAULT_SINK@ "
-                        "| grep -oP '\\d+(?=%)' | head -1", "r");
-        int vol = 0;
-        if (p) { fscanf(p, "%d", &vol); pclose(p); }
-        return vol;
-}
-
-static void set_volume(int delta) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd),
-                "pactl set-sink-volume @DEFAULT_SINK@ %s%d%%",
-                delta >= 0 ? "+" : "-", abs(delta));
-        system(cmd);
-}
-
-static void toggle_mute(void) {
-        system("pactl set-sink-mute @DEFAULT_SINK@ toggle");
-}
-
-#endif /* backend */
 
 int main(int argc, char** argv) {
-        int vol;
-        char body[64];
-        char summary[64];
-        const char* icon = "🔊";
-        BndNotifyOpts opts;
-
-        if (argc < 2) {
-                fprintf(stderr, "usage: doi-volume [up|down|mute|get]\n");
-                return EXIT_FAILURE;
-        }
-
-        if (strcmp(argv[1], "up") == 0) {
-                set_volume(5);
-                icon = "🔊";
-        } else if (strcmp(argv[1], "down") == 0) {
-                set_volume(-5);
-                icon = "🔉";
-        } else if (strcmp(argv[1], "mute") == 0) {
-                toggle_mute();
-                icon = "🔇";
-        } else if (strcmp(argv[1], "get") != 0) {
-                fprintf(stderr, "usage: doi-volume [up|down|mute|get]\n");
-                return EXIT_FAILURE;
-        }
-
-        vol = get_volume();
-        snprintf(summary, sizeof(summary), "%s  Volume", icon);
-        snprintf(body,    sizeof(body),    "%d%%", vol);
-
-        memset(&opts, 0, sizeof(BndNotifyOpts));
-        opts.summary      = summary;
-        opts.body         = body;
-        opts.icon         = "";
-        opts.bg           = BND_VOLUME_BG;
-        opts.fg           = BND_VOLUME_FG;
-        opts.border       = BND_VOLUME_BORDER;
-        opts.border_color = BND_VOLUME_BORDER_COLOR;
-        opts.timeout      = BND_VOLUME_TIMEOUT * 1000;
-        opts.pos_x        = BND_VOLUME_POS_X;
-        opts.pos_y        = BND_VOLUME_POS_Y;
-        opts.show_bar     = 1;
-        opts.bar_value    = vol;
-
-        return doi_notify_opts(&opts);
+        const char* cmd = argc >= 2 ? argv[1] : "get";
+        if (strcmp(cmd, "up") == 0)
+                system("pamixer -i 5");
+        else if (strcmp(cmd, "down") == 0)
+                system("pamixer -d 5");
+        else if (strcmp(cmd, "mute") == 0)
+                system("pamixer -t");
+        notify(get_vol(), get_muted());
+        return EXIT_SUCCESS;
 }

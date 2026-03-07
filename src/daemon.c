@@ -7,500 +7,326 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <dbus/dbus.h>
-#include "notify.h"
+#include "notif.h"
 #include "log.h"
 #include "../config.h"
 
-/* slot tracker: counts active notifications per (pos_x, pos_y) pair */
-#define DOI_MAX_CHILDREN 64
-static int  slot_count[3][3] = {{0}};
-static pid_t child_pid[DOI_MAX_CHILDREN];
-static int   child_px[DOI_MAX_CHILDREN];
-static int   child_py[DOI_MAX_CHILDREN];
-static int   child_slot[DOI_MAX_CHILDREN];
-static int   child_count = 0;
+/* ── persistent render children ──────────────────────────────────────── */
+/* Each unique (app_name + pos_x + pos_y) gets one persistent child.
+ * New notifications for the same slot are piped into the existing child — 
+ * no kill, no respawn, no flicker. */
 
-static void sigchld_handler(int a) {
-        pid_t p;
-        int i;
-        (void)a;
+#define MAX_SLOTS 32
+
+typedef struct {
+        char  key[128];   /* "app|pos_x|pos_y" */
+        pid_t pid;
+        int   write_fd;   /* write end of pipe to child */
+        int   stack_idx;
+} Slot;
+
+static Slot   slots[MAX_SLOTS];
+static int    slot_count = 0;
+
+/* track stack depth per position for stacking */
+static int    stack_depth[3][3];
+
+static void sigchld_handler(int sig) {
+        pid_t p; int i;
+        (void)sig;
         while ((p = waitpid(-1, NULL, WNOHANG)) > 0) {
-                for (i = 0; i < child_count; ++i) {
-                        if (child_pid[i] == p) {
-                                int px = child_px[i];
-                                int py = child_py[i];
-                                /* mark slot as free by shifting higher slots down */
-                                int freed = child_slot[i];
-                                int j;
-                                for (j = 0; j < child_count; ++j) {
-                                        if (child_px[j] == px
-                                                && child_py[j] == py
-                                                && child_slot[j] > freed) {
-                                                child_slot[j]--;
-                                        }
-                                }
-                                if (slot_count[px][py] > 0)
-                                        slot_count[px][py]--;
-                                /* compact array */
-                                child_pid[i]  = child_pid[child_count-1];
-                                child_px[i]   = child_px[child_count-1];
-                                child_py[i]   = child_py[child_count-1];
-                                child_slot[i] = child_slot[child_count-1];
-                                child_count--;
-                                break;
-                        }
+                for (i = 0; i < slot_count; i++) {
+                        if (slots[i].pid != p) continue;
+                        w_log("slot %s exited unexpectedly", slots[i].key);
+                        close(slots[i].write_fd);
+                        /* compact */
+                        slots[i] = slots[slot_count-1];
+                        slot_count--;
+                        break;
                 }
         }
 }
 
-static int acquire_slot(int pos_x, int pos_y) {
-        int s = slot_count[pos_x][pos_y]++;
+static void make_key(char* out, size_t sz,
+                const char* app, int px, int py) {
+        snprintf(out, sz, "%s|%d|%d", app ? app : "", px, py);
+}
+
+static Slot* find_slot(const char* key) {
+        int i;
+        for (i = 0; i < slot_count; i++)
+                if (strcmp(slots[i].key, key) == 0)
+                        return &slots[i];
+        return NULL;
+}
+
+static Slot* new_slot(const char* key, int px, int py,
+                Notif* initial) {
+        int fds[2];
+        pid_t pid;
+
+        if (slot_count >= MAX_SLOTS) return NULL;
+        if (pipe(fds) < 0) return NULL;
+
+        pid = fork();
+        if (pid < 0) { close(fds[0]); close(fds[1]); return NULL; }
+
+        if (pid == 0) {
+                /* child: close write end, render from read end */
+                close(fds[1]);
+                render_loop(fds[0], initial);
+                close(fds[0]);
+                exit(EXIT_SUCCESS);
+        }
+
+        /* parent: close read end */
+        close(fds[0]);
+
+        Slot* s = &slots[slot_count++];
+        strncpy(s->key, key, sizeof(s->key)-1);
+        s->pid      = pid;
+        s->write_fd = fds[1];
+        s->stack_idx = stack_depth[px][py]++;
+        w_log("new slot key=%s pid=%d sidx=%d", key, (int)pid, s->stack_idx);
         return s;
 }
 
-static void register_child(pid_t p, int pos_x, int pos_y, int slot) {
-        if (child_count < DOI_MAX_CHILDREN) {
-                child_pid[child_count]  = p;
-                child_px[child_count]   = pos_x;
-                child_py[child_count]   = pos_y;
-                child_slot[child_count] = slot;
-                child_count++;
-        }
-}
-
-/* replace tracking: keyed by notif_id OR by app+summary string */
-#define DOI_MAX_IDS 64
-
-static dbus_uint32_t id_map_id[DOI_MAX_IDS];
-static int           id_map_idx[DOI_MAX_IDS];
-static char          id_map_key[DOI_MAX_IDS][128]; /* "app\0summary" */
-static int           id_map_count = 0;
-
-static void make_key(char* out, size_t sz,
-                const char* app, const char* summary) {
-        snprintf(out, sz, "%s|%s", app ? app : "", summary ? summary : "");
-}
-
-static void id_map_add(dbus_uint32_t id, int child_idx,
-                const char* app, const char* summary) {
-        if (id_map_count < DOI_MAX_IDS) {
-                id_map_id[id_map_count]  = id;
-                id_map_idx[id_map_count] = child_idx;
-                make_key(id_map_key[id_map_count],
-                        sizeof(id_map_key[0]), app, summary);
-                id_map_count++;
-        }
-}
-
-static void write_update(pid_t pid, const Notification* n) {
-        char path[512];
-        const char* home = getenv("HOME");
-        FILE* f;
+static void send_update(Slot* s, const Notif* n) {
         NotifUpdate u;
-        snprintf(path, sizeof(path), "%s/.doi/update.%d",
-                home ? home : "/tmp", (int)pid);
-        f = fopen(path, "wb");
-        if (!f) return;
         memset(&u, 0, sizeof(u));
         if (n->summary) strncpy(u.summary, n->summary, sizeof(u.summary)-1);
         if (n->body)    strncpy(u.body,    n->body,    sizeof(u.body)-1);
-        u.bar_value = n->bar_value;
-        u.show_bar  = n->show_bar;
-        fwrite(&u, sizeof(u), 1, f);
-        fclose(f);
+        if (n->icon)    strncpy(u.icon,    n->icon,    sizeof(u.icon)-1);
+        if (n->bg)      strncpy(u.bg,      n->bg,      sizeof(u.bg)-1);
+        if (n->fg)      strncpy(u.fg,      n->fg,      sizeof(u.fg)-1);
+        if (n->border_color)
+                        strncpy(u.border_color, n->border_color,
+                                sizeof(u.border_color)-1);
+        if (n->bar_fg)  strncpy(u.bar_fg, n->bar_fg,  sizeof(u.bar_fg)-1);
+        if (n->bar_bg)  strncpy(u.bar_bg, n->bar_bg,  sizeof(u.bar_bg)-1);
+        u.border     = n->border;
+        u.timeout    = n->timeout;
+        u.min_width  = n->min_width;
+        u.show_icon  = n->show_icon;
+        u.show_body  = n->show_body;
+        u.show_bar   = n->show_bar;
+        u.bar_value  = n->bar_value;
+        u.bar_width  = n->bar_width;
+        u.bar_height = n->bar_height;
+        u.min_height = n->min_height;
+        u.offset_x   = n->offset_x;
+        u.offset_y   = n->offset_y;
+        write(s->write_fd, &u, sizeof(u));
 }
 
-static int do_replace(int i, int* out_px, int* out_py,
-                const Notification* new_n) {
-        int idx = id_map_idx[i];
-        if (idx >= child_count) return -1;
+/* ── hint parsing ─────────────────────────────────────────────────────── */
 
-        int slot = child_slot[idx];
-        *out_px  = child_px[idx];
-        *out_py  = child_py[idx];
-
-        if (new_n) {
-                /* update in place: write file then signal SIGUSR2 */
-                write_update(child_pid[idx], new_n);
-                kill(child_pid[idx], SIGUSR2);
-                /* remove old id_map entry — caller will re-add with new notif_id */
-                id_map_id[i]  = id_map_id[id_map_count-1];
-                id_map_idx[i] = id_map_idx[id_map_count-1];
-                memcpy(id_map_key[i], id_map_key[id_map_count-1],
-                        sizeof(id_map_key[0]));
-                id_map_count--;
-                return -(idx + 10); /* encode child idx: caller extracts as -(r+10) */
-        }
-
-        /* no new content — kill and free slot */
-        kill(child_pid[idx], SIGUSR1);
-        child_pid[idx]  = child_pid[child_count-1];
-        child_px[idx]   = child_px[child_count-1];
-        child_py[idx]   = child_py[child_count-1];
-        child_slot[idx] = child_slot[child_count-1];
-        child_count--;
-        id_map_id[i]  = id_map_id[id_map_count-1];
-        id_map_idx[i] = id_map_idx[id_map_count-1];
-        memcpy(id_map_key[i], id_map_key[id_map_count-1],
-                sizeof(id_map_key[0]));
-        id_map_count--;
-        return slot;
-}
-
-/* Kill existing child: first by replace_id, then by app+summary key */
-static int replace_existing(dbus_uint32_t replace_id,
-                const char* app, const char* summary,
-                int* out_px, int* out_py,
-                const Notification* new_n) {
-        char key[128];
-        int i;
-        if (replace_id > 0) {
-                for (i = 0; i < id_map_count; ++i) {
-                        if (id_map_id[i] == replace_id)
-                                return do_replace(i, out_px, out_py, new_n);
-                }
-        }
-        make_key(key, sizeof(key), app, summary);
-        for (i = 0; i < id_map_count; ++i) {
-                if (strcmp(id_map_key[i], key) == 0)
-                        return do_replace(i, out_px, out_py, new_n);
-        }
-        return -1;
-}
-
-static void send_notification_closed(DBusConnection* conn,
-                dbus_uint32_t id, dbus_uint32_t reason) {
-        DBusMessage* sig;
-        sig = dbus_message_new_signal("/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications", "NotificationClosed");
-        dbus_message_append_args(sig,
-                DBUS_TYPE_UINT32, &id,
-                DBUS_TYPE_UINT32, &reason,
-                DBUS_TYPE_INVALID);
-        dbus_connection_send(conn, sig, NULL);
-        dbus_message_unref(sig);
-}
-
-static void read_hints(DBusMessageIter* hints_iter, Notification* n) {
+static void read_hints(DBusMessageIter* it, Notif* n) {
         DBusMessageIter dict;
-
-        if (dbus_message_iter_get_arg_type(hints_iter) != DBUS_TYPE_ARRAY)
-                return;
-
-        dbus_message_iter_recurse(hints_iter, &dict);
-
+        if (dbus_message_iter_get_arg_type(it) != DBUS_TYPE_ARRAY) return;
+        dbus_message_iter_recurse(it, &dict);
         while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY) {
                 DBusMessageIter entry, var;
                 const char* key;
-
                 dbus_message_iter_recurse(&dict, &entry);
                 dbus_message_iter_get_basic(&entry, &key);
                 dbus_message_iter_next(&entry);
-
                 if (dbus_message_iter_get_arg_type(&entry) != DBUS_TYPE_VARIANT)
                         goto next;
-
                 dbus_message_iter_recurse(&entry, &var);
+                int type = dbus_message_iter_get_arg_type(&var);
 
-                if (strcmp(key, "x-doi-bg") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_STRING) {
-                        const char* v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->bg = strdup(v);
+#define STR_HINT(k, field) \
+        if (strcmp(key,k)==0 && type==DBUS_TYPE_STRING) { \
+                const char* v; dbus_message_iter_get_basic(&var,&v); \
+                free(n->field); n->field=strdup(v); goto next; }
+#define INT_HINT(k, field) \
+        if (strcmp(key,k)==0 && type==DBUS_TYPE_INT32) { \
+                dbus_int32_t v; dbus_message_iter_get_basic(&var,&v); \
+                n->field=(int)v; goto next; }
 
-                } else if (strcmp(key, "x-doi-fg") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_STRING) {
-                        const char* v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->fg = strdup(v);
+                STR_HINT("x-doi-bg",           bg)
+                STR_HINT("x-doi-fg",           fg)
+                STR_HINT("x-doi-border-color", border_color)
+                STR_HINT("x-doi-bar-fg",       bar_fg)
+                STR_HINT("x-doi-bar-bg",       bar_bg)
+                INT_HINT("x-doi-border",       border)
+                INT_HINT("x-doi-pos-x",        pos_x)
+                INT_HINT("x-doi-pos-y",        pos_y)
+                INT_HINT("x-doi-show-bar",     show_bar)
+                INT_HINT("x-doi-bar-value",    bar_value)
+                INT_HINT("x-doi-bar-width",    bar_width)
+                INT_HINT("x-doi-bar-height",   bar_height)
+                INT_HINT("x-doi-min-width",    min_width)
+                INT_HINT("x-doi-min-height",   min_height)
+                INT_HINT("x-doi-offset-x",     offset_x)
+                INT_HINT("x-doi-offset-y",     offset_y)
+                INT_HINT("x-doi-show-icon",    show_icon)
+                INT_HINT("x-doi-show-body",    show_body)
 
-                } else if (strcmp(key, "x-doi-border-color") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_STRING) {
-                        const char* v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->border_color = strdup(v);
-
-                } else if (strcmp(key, "x-doi-border") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_INT32) {
-                        dbus_int32_t v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->border = (int)v;
-
-                } else if (strcmp(key, "x-doi-pos-x") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_INT32) {
-                        dbus_int32_t v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->pos_x = (int)v;
-
-                } else if (strcmp(key, "x-doi-pos-y") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_INT32) {
-                        dbus_int32_t v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->pos_y = (int)v;
-
-                } else if (strcmp(key, "x-doi-show-bar") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_INT32) {
-                        dbus_int32_t v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->show_bar = (int)v;
-
-                } else if (strcmp(key, "x-doi-bar-value") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_INT32) {
-                        dbus_int32_t v;
-                        dbus_message_iter_get_basic(&var, &v);
-                        n->bar_value = (int)v;
-
-                /* standard freedesktop progress bar hint */
-                } else if (strcmp(key, "value") == 0
-                                && dbus_message_iter_get_arg_type(&var)
-                                        == DBUS_TYPE_INT32) {
+                if (strcmp(key,"value")==0 && type==DBUS_TYPE_INT32) {
                         dbus_int32_t v;
                         dbus_message_iter_get_basic(&var, &v);
                         n->bar_value = (int)v;
                         n->show_bar  = 1;
                 }
-
 next:
                 dbus_message_iter_next(&dict);
         }
 }
 
-static DBusHandlerResult handle_message(DBusConnection* conn,
+/* ── ignore list ──────────────────────────────────────────────────────── */
+
+static int is_ignored(const char* app) {
+        char buf[] = DOI_IGNORE_APPS;
+        char* tok = strtok(buf, ",");
+        while (tok) {
+                while (*tok == ' ') tok++;
+                if (strcmp(tok, app) == 0) return 1;
+                tok = strtok(NULL, ",");
+        }
+        return 0;
+}
+
+/* ── DBus message handler ─────────────────────────────────────────────── */
+
+static DBusHandlerResult handle(DBusConnection* conn,
                 DBusMessage* msg, void* data) {
         (void)data;
 
+        if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_METHOD_CALL)
+                return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
         if (dbus_message_is_method_call(msg,
                         "org.freedesktop.Notifications", "Notify")) {
-                char* app_name = "";
-                dbus_uint32_t replace_id = 0;
-                char* app_icon = "";
-                char* summary  = "";
-                char* body     = "";
-                dbus_int32_t expire_timeout = 0;
-                DBusError err;
-                DBusMessage* reply;
-                static dbus_uint32_t notif_id = 1;
+
+                static dbus_uint32_t next_id = 1;
                 DBusMessageIter args;
-                pid_t pid;
-                Notification n;
+                DBusMessage* reply;
+                char*  app_name  = "";
+                dbus_uint32_t replace_id = 0;
+                char*  app_icon  = "";
+                char*  summary   = "";
+                char*  body      = "";
+                dbus_int32_t expire = -1;
+                Notif n;
 
-                dbus_error_init(&err);
-                if (!dbus_message_iter_init(msg, &args)) goto send_reply;
+                if (!dbus_message_iter_init(msg, &args)) goto reply;
 
-                /* arg 0: app_name (string) */
-                if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING)
-                        dbus_message_iter_get_basic(&args, &app_name);
+#define NEXT_STR(f) \
+        if (dbus_message_iter_get_arg_type(&args)==DBUS_TYPE_STRING) \
+                dbus_message_iter_get_basic(&args,&f); \
+        dbus_message_iter_next(&args);
+#define NEXT_U32(f) \
+        if (dbus_message_iter_get_arg_type(&args)==DBUS_TYPE_UINT32) \
+                dbus_message_iter_get_basic(&args,&f); \
+        dbus_message_iter_next(&args);
+
+                NEXT_STR(app_name)
+                NEXT_U32(replace_id)
+                NEXT_STR(app_icon)
+                NEXT_STR(summary)
+                NEXT_STR(body)
+                dbus_message_iter_next(&args); /* skip actions */
+
+                memset(&n, 0, sizeof(n));
+                n.summary   = strdup(summary);
+                n.body      = strdup(body);
+                
+                n.icon      = (app_icon[0] && app_icon[0]!='/'
+                                && strncmp(app_icon,"file:",5)!=0)
+                                ? strdup(app_icon) : strdup("");
+                n.border     = -1;
+                n.show_icon  = -1;
+                n.show_body  = -1;
+                n.bar_width  = -1;
+                n.bar_height = -1;
+                n.min_width  = -1;
+                n.min_height = -1;
+                n.offset_x   = -1;
+                n.offset_y   = -1;
+                n.pos_x      = DOI_POS_X;
+                n.pos_y      = DOI_POS_Y;
+                n.timeout    = DOI_TIMEOUT;
+
+                read_hints(&args, &n);
                 dbus_message_iter_next(&args);
 
-                /* arg 1: replace_id (uint32) */
-                if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_UINT32)
-                        dbus_message_iter_get_basic(&args, &replace_id);
-                dbus_message_iter_next(&args);
-
-                /* arg 2: app_icon (string) */
-                if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING)
-                        dbus_message_iter_get_basic(&args, &app_icon);
-                dbus_message_iter_next(&args);
-
-                /* arg 3: summary (string) */
-                if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING)
-                        dbus_message_iter_get_basic(&args, &summary);
-                dbus_message_iter_next(&args);
-
-                /* arg 4: body (string) */
-                if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_STRING)
-                        dbus_message_iter_get_basic(&args, &body);
-                dbus_message_iter_next(&args);
-
-                /* arg 5: actions (array of string) — skip */
-                dbus_message_iter_next(&args);
-
-                /* arg 6: hints (array of dict entries) — READ THIS */
-                memset(&n, 0, sizeof(Notification));
-                n.summary      = summary;
-                n.body         = body;
-                n.app_name     = app_name;
-                /* skip file:// paths unless Imlib2 is available
-                 * to avoid rendering raw paths as text */
-#ifdef DOI_USE_IMLIB2
-                n.icon = app_icon;
-#else
-                n.icon = (app_icon[0] && app_icon[0] != '/'
-                        && strncmp(app_icon, "file:", 5) != 0)
-                        ? app_icon : "";
-#endif
-                n.bg           = NULL;
-                n.fg           = NULL;
-                n.border_color = NULL;
-                n.border       = -1;
-                n.timeout      = DOI_TIMEOUT;
-                n.pos_x        = DOI_POS_X;
-                n.pos_y        = DOI_POS_Y;
-                n.show_icon    = -1;
-                n.show_body    = -1;
-                n.show_bar     = 0;
-                n.bar_value    = 0;
-
-                read_hints(&args, &n);  /* args is pointing at hints dict */
-                dbus_message_iter_next(&args);
-
-                /* arg 7: expire_timeout (int32) */
-                if (dbus_message_iter_get_arg_type(&args) == DBUS_TYPE_INT32) {
-                        dbus_message_iter_get_basic(&args, &expire_timeout);
-                        if (expire_timeout > 0)
-                                n.timeout = expire_timeout / 1000;
+                if (dbus_message_iter_get_arg_type(&args)==DBUS_TYPE_INT32) {
+                        dbus_message_iter_get_basic(&args, &expire);
+                        if (expire > 0) n.timeout = expire / 1000;
                 }
 
-                /* ignore noisy system notifications */
-                if (strcmp(app_name, "flameshot") == 0)
-                        goto send_reply;
+                (void)replace_id; /* unused — slot key handles identity */
 
-                w_log("Notify: app=%s summary=%s pos=%d,%d bg=%s bar=%d val=%d replace=%u",
-                        app_name, summary, n.pos_x, n.pos_y,
-                        n.bg ? n.bg : "(default)",
-                        n.show_bar, n.bar_value, replace_id);
+                if (is_ignored(app_name)) {
+                        free(n.summary); free(n.body);
+                         free(n.icon);
+                        goto reply;
+                }
+
+                w_log("Notify app=%s sum=%s pos=%d,%d bar=%d/%d",
+                        app_name, summary,
+                        n.pos_x, n.pos_y, n.show_bar, n.bar_value);
 
                 {
-                        int rpx = n.pos_x, rpy = n.pos_y;
-                        int rslot = replace_existing(replace_id,
-                                app_name, summary, &rpx, &rpy, &n);
-                        if (rslot <= -10) {
-                                /* updated in place — re-register with new notif_id */
-                                int cidx = -(rslot + 10);
-                                id_map_add(notif_id, cidx, app_name, summary);
-                                w_log("updated in place cidx=%d pos=%d,%d", cidx, rpx, rpy);
-                                goto send_reply;
-                        } else if (rslot >= 0) {
-                                n.pos_x       = rpx;
-                                n.pos_y       = rpy;
-                                n.stack_index = rslot;
-                                w_log("replacing slot %d pos=%d,%d", rslot, rpx, rpy);
+                        char key[128];
+                        make_key(key, sizeof(key), app_name, n.pos_x, n.pos_y);
+                        Slot* s = find_slot(key);
+                        if (s) {
+                                /* existing child — just pipe the update */
+                                send_update(s, &n);
+                                w_log("updated slot key=%s", key);
                         } else {
-#if DOI_STACK_LIMIT > 0
-                                /* check if we are at the limit */
-                                if (slot_count[n.pos_x][n.pos_y] >= DOI_STACK_LIMIT) {
-                                        /* update the overflow indicator in the last slot */
-                                        int overflow = slot_count[n.pos_x][n.pos_y]
-                                                        - DOI_STACK_LIMIT + 1;
-                                        char obody[64];
-                                        Notification ov;
-                                        snprintf(obody, sizeof(obody),
-                                                DOI_STACK_OVERFLOW, overflow);
-                                        memset(&ov, 0, sizeof(Notification));
-                                        ov.summary      = obody;
-                                        ov.body         = "";
-                                        ov.bg           = n.bg;
-                                        ov.fg           = n.fg;
-                                        ov.border_color = n.border_color;
-                                        ov.border       = n.border;
-                                        ov.timeout      = n.timeout;
-                                        ov.pos_x        = n.pos_x;
-                                        ov.pos_y        = n.pos_y;
-                                        ov.show_icon    = 0;
-                                        ov.show_body    = 0;
-                                        ov.show_bar     = 0;
-                                        ov.stack_index  = DOI_STACK_LIMIT - 1;
-                                        /* replace existing overflow indicator if present */
-                                        {
-                                                int ox, oy;
-                                                replace_existing(0,
-                                                        "doi-overflow", "overflow",
-                                                        &ox, &oy, NULL);
-                                        }
-                                        pid = fork();
-                                        if (pid == 0) {
-                                                notify(&ov);
-                                                exit(EXIT_SUCCESS);
-                                        }
-                                        register_child(pid, n.pos_x, n.pos_y,
-                                                DOI_STACK_LIMIT - 1);
-                                        id_map_add(notif_id, child_count - 1,
-                                                "doi-overflow", "overflow");
-                                        slot_count[n.pos_x][n.pos_y]++;
-                                        goto send_reply;
-                                }
-#endif
-                                n.stack_index = acquire_slot(n.pos_x, n.pos_y);
-                                w_log("slot acquired: index=%d pos=%d,%d", n.stack_index, n.pos_x, n.pos_y);
+                                /* new slot — spawn persistent child */
+                                s = new_slot(key, n.pos_x, n.pos_y, &n);
+                                if (s) send_update(s, &n);
                         }
                 }
 
-                pid = fork();
-                if (pid == 0) {
-                        notify(&n);
-                        free(n.bg);
-                        free(n.fg);
-                        free(n.border_color);
-                        exit(EXIT_SUCCESS);
-                }
+                free(n.summary); free(n.body);  free(n.icon);
+                free(n.bg); free(n.fg); free(n.border_color);
+                free(n.bar_fg); free(n.bar_bg);
 
-                /* release slot when child finishes (via sigchld_handler) */
-                /* we track release by monitoring child exit in a wrapper */
-                register_child(pid, n.pos_x, n.pos_y, n.stack_index);
-                id_map_add(notif_id, child_count - 1, app_name, summary);
-                free(n.bg);
-                free(n.fg);
-                free(n.border_color);
-
-send_reply:
+reply:
                 reply = dbus_message_new_method_return(msg);
                 dbus_message_append_args(reply,
-                        DBUS_TYPE_UINT32, &notif_id,
-                        DBUS_TYPE_INVALID);
+                        DBUS_TYPE_UINT32, &next_id, DBUS_TYPE_INVALID);
                 dbus_connection_send(conn, reply, NULL);
                 dbus_message_unref(reply);
-                send_notification_closed(conn, notif_id, 1);
-                notif_id++;
+                next_id++;
                 return DBUS_HANDLER_RESULT_HANDLED;
 
         } else if (dbus_message_is_method_call(msg,
-                        "org.freedesktop.Notifications",
-                        "GetCapabilities")) {
-                DBusMessage* reply;
-                DBusMessageIter args, arr;
+                        "org.freedesktop.Notifications", "GetCapabilities")) {
                 const char* caps[] = {
-                        "actions", "body", "body-markup",
-                        "icon-static", "persistence",
-                        "x-doi-hints"
+                        "actions","body","body-markup",
+                        "icon-static","persistence","x-doi-hints"
                 };
-                int i;
-                reply = dbus_message_new_method_return(msg);
-                dbus_message_iter_init_append(reply, &args);
-                dbus_message_iter_open_container(&args, DBUS_TYPE_ARRAY,
-                        DBUS_TYPE_STRING_AS_STRING, &arr);
-                for (i = 0; i < 6; ++i)
+                DBusMessage* r = dbus_message_new_method_return(msg);
+                DBusMessageIter a, arr; int i;
+                dbus_message_iter_init_append(r, &a);
+                dbus_message_iter_open_container(&a,DBUS_TYPE_ARRAY,
+                        DBUS_TYPE_STRING_AS_STRING,&arr);
+                for (i=0;i<6;i++)
                         dbus_message_iter_append_basic(&arr,
-                                DBUS_TYPE_STRING, &caps[i]);
-                dbus_message_iter_close_container(&args, &arr);
-                dbus_connection_send(conn, reply, NULL);
-                dbus_message_unref(reply);
+                                DBUS_TYPE_STRING,&caps[i]);
+                dbus_message_iter_close_container(&a,&arr);
+                dbus_connection_send(conn, r, NULL);
+                dbus_message_unref(r);
                 return DBUS_HANDLER_RESULT_HANDLED;
 
         } else if (dbus_message_is_method_call(msg,
                         "org.freedesktop.Notifications",
                         "GetServerInformation")) {
-                DBusMessage* reply;
-                const char* name    = "bndd";
-                const char* vendor  = "bnd";
-                const char* version = "1.0";
-                const char* spec    = "1.2";
-                reply = dbus_message_new_method_return(msg);
-                dbus_message_append_args(reply,
-                        DBUS_TYPE_STRING, &name,
-                        DBUS_TYPE_STRING, &vendor,
-                        DBUS_TYPE_STRING, &version,
-                        DBUS_TYPE_STRING, &spec,
+                const char *name="doid",*vendor="doi",*ver="2.0",*spec="1.2";
+                DBusMessage* r = dbus_message_new_method_return(msg);
+                dbus_message_append_args(r,
+                        DBUS_TYPE_STRING,&name, DBUS_TYPE_STRING,&vendor,
+                        DBUS_TYPE_STRING,&ver,  DBUS_TYPE_STRING,&spec,
                         DBUS_TYPE_INVALID);
-                dbus_connection_send(conn, reply, NULL);
-                dbus_message_unref(reply);
+                dbus_connection_send(conn, r, NULL);
+                dbus_message_unref(r);
                 return DBUS_HANDLER_RESULT_HANDLED;
 
         } else if (dbus_message_is_method_call(msg,
@@ -508,77 +334,72 @@ send_reply:
                         "CloseNotification")) {
                 dbus_uint32_t id = 0;
                 DBusError err;
-                DBusMessage* reply;
+                DBusMessage* r;
                 dbus_error_init(&err);
-                dbus_message_get_args(msg, &err,
-                        DBUS_TYPE_UINT32, &id, DBUS_TYPE_INVALID);
+                dbus_message_get_args(msg,&err,
+                        DBUS_TYPE_UINT32,&id,DBUS_TYPE_INVALID);
                 dbus_error_free(&err);
-                reply = dbus_message_new_method_return(msg);
-                dbus_connection_send(conn, reply, NULL);
-                dbus_message_unref(reply);
-                send_notification_closed(conn, id, 3);
+                r = dbus_message_new_method_return(msg);
+                dbus_connection_send(conn, r, NULL);
+                dbus_message_unref(r);
                 return DBUS_HANDLER_RESULT_HANDLED;
         }
 
         return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 }
 
+/* ── main ─────────────────────────────────────────────────────────────── */
+
 int main(void) {
         DBusConnection* conn;
         DBusError err;
         int ret;
-        struct sigaction newaction;
-        pid_t sid;
-        pid_t pid = fork();
+        struct sigaction sa;
+        pid_t sid, pid = fork();
 
-        if (pid < 0) { w_log("ERROR: fork failed."); return EXIT_FAILURE; }
+        if (pid < 0) return EXIT_FAILURE;
         if (pid > 0) return EXIT_SUCCESS;
 
         sid = setsid();
-        if (sid < 0) { w_log("ERROR: setsid failed."); return EXIT_FAILURE; }
+        if (sid < 0) return EXIT_FAILURE;
         chdir("/");
 
-        newaction.sa_handler = sigchld_handler;
-        sigemptyset(&newaction.sa_mask);
-        newaction.sa_flags = 0;
-        sigaction(SIGCHLD, &newaction, NULL);
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = sigchld_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART;
+        sigaction(SIGCHLD, &sa, NULL);
 
-        /* ensure log directory exists */
         {
                 const char* home = getenv("HOME");
                 if (home) {
-                        char logdir[512];
-                        snprintf(logdir, sizeof(logdir), "%s/.bnd", home);
-                        mkdir(logdir, 0755);
+                        char dir[512];
+                        snprintf(dir, sizeof(dir), "%s/.doi", home);
+                        mkdir(dir, 0755);
                 }
         }
 
         dbus_error_init(&err);
         conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
         if (dbus_error_is_set(&err)) {
-                w_log("ERROR: dbus: %s", err.message);
+                w_log("dbus: %s", err.message);
                 dbus_error_free(&err);
                 return EXIT_FAILURE;
         }
 
-        ret = dbus_bus_request_name(conn, "org.freedesktop.Notifications",
+        ret = dbus_bus_request_name(conn,
+                "org.freedesktop.Notifications",
                 DBUS_NAME_FLAG_REPLACE_EXISTING, &err);
-        if (dbus_error_is_set(&err)) {
-                w_log("ERROR: request name: %s", err.message);
-                dbus_error_free(&err);
-                return EXIT_FAILURE;
-        }
-        if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
-                w_log("ERROR: not primary owner.");
+        if (dbus_error_is_set(&err) ||
+                        ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+                w_log("failed to own org.freedesktop.Notifications");
                 return EXIT_FAILURE;
         }
 
-        if (!dbus_connection_add_filter(conn, handle_message, NULL, NULL)) {
-                w_log("ERROR: add filter failed.");
+        if (!dbus_connection_add_filter(conn, handle, NULL, NULL))
                 return EXIT_FAILURE;
-        }
 
-        w_log("bndd started");
+        w_log("doid started");
 
         while (dbus_connection_read_write_dispatch(conn, -1))
                 ;

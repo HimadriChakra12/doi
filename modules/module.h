@@ -1,36 +1,34 @@
-/*
- * doi module interface
- *
- * Each module fills a BndNotifyOpts struct and calls doi_notify_opts().
- * Options are packed into DBus hints and read by doid, which passes
- * them into the Notification struct for notify().
- */
+#ifndef DOI_MODULE_H
+#define DOI_MODULE_H
 
-#ifndef MODULE_H
-#define MODULE_H
-
-#include <dbus/dbus.h>
 #include "../config.h"
 
+/* Options passed by a module when sending a notification.
+ * Unset string fields = NULL, unset int fields = -1 (use config default). */
 typedef struct {
         const char* summary;
         const char* body;
-        const char* icon;
+        const char* icon;        /* emoji/text drawn before summary         */
         const char* bg;
         const char* fg;
         const char* border_color;
-        int border;     /* px, -1 = use global */
-        int timeout;    /* ms */
-        int pos_x;      /* BND_LEFT / BND_CENTER / BND_RIGHT */
-        int pos_y;      /* BND_TOP  / BND_MIDDLE / BND_BOTTOM */
-        int show_bar;
-        int bar_value;  /* 0-100 */
-} BndNotifyOpts;
+        const char* bar_fg;
+        const char* bar_bg;
+        int   border;            /* -1 = use config                         */
+        int   timeout;           /* ms                                      */
+        int   pos_x;
+        int   pos_y;
+        int   min_width;         /* -1 = use config                         */
+        int   show_bar;
+        int   bar_value;         /* 0–100                                   */
+        int   bar_width;         /* -1 = use config                         */
+        int   bar_height;        /* -1 = use config                         */
+        int   min_height;        /* -1 = no minimum                         */
+        int   offset_x;          /* -1 = use DOI_OFFSET_X                   */
+        int   offset_y;          /* -1 = use DOI_OFFSET_Y                   */
+} DoiOpts;
 
-int doi_notify_opts(const BndNotifyOpts* opts);
-
-/* convenience wrapper - uses global defaults for pos/color */
-int doi_notify(const char* summary, const char* body,
-               const char* icon, int timeout_ms);
+/* Send a notification via DBus. Returns 0 on success. */
+int doi_notify(const DoiOpts* opts);
 
 #endif
