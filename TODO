@@ -1,9 +1,3 @@
-- stack the notifications (keep track of still alive children)
-- redraw when uncovered
-- usage, help, --start, --stop
-- think about security (installation? escaping stuff? maybe some sort of
-  protection against too many requests? (eg no more than 15 windows at once))
-- configure socket placement, log placement, etc.
-- find out why there are still zombies
-- a "usage" funciton that calls "print_help" to make the parsing of args
-  lighter.
+- Block/Brick
+- Border Radius
+- Stack Number
