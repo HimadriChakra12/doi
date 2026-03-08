@@ -47,7 +47,7 @@
 #define DOI_STACK_LIMIT    5
 #define DOI_STACK_OVERFLOW "… and %d more"
 /* ── ignored apps ─────────────────────────────────────────────────────── */
-#define DOI_IGNORE_APPS   "flameshot"
+#define DOI_IGNORE_APPS   ""
 /* ═══════════════════════════════════════════════════════════════════════ */
 /*  MODULE OVERRIDES                                                       */
 /* ═══════════════════════════════════════════════════════════════════════ */
