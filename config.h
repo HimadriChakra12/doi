@@ -19,7 +19,9 @@
 #define DOI_BG            "#282828"
 #define DOI_FG            "wheat"
 #define DOI_BORDER_COLOR  "wheat"
-#define DOI_BORDER        1
+#define DOI_BORDER        2
+#define DOI_BORDER_RADIUS 6          /* corner radius in px (0 = square)    */
+#define DOI_LAYOUT        0          /* 0=brick (auto width) 1=block (fixed)*/
 #define DOI_PADDING       10         /* nearest int to 9.5 — must be integer */
 #define DOI_MARGIN        10
 #define DOI_MIN_WIDTH     260
@@ -38,13 +40,13 @@
 #define DOI_BAR_FG        "wheat"
 #define DOI_BAR_RADIUS    3
 /* ── stacking ─────────────────────────────────────────────────────────── */
-#define DOI_STACK_GAP      9
-#define DOI_NOTIF_HEIGHT   80
+#define DOI_STACK_GAP      8
+#define DOI_NOTIF_HEIGHT   62         /* fixed height for all notification windows    */
 #define DOI_STACK_HEIGHT   70         /* step between stacked slots (notif + gap)     */
 #define DOI_STACK_LIMIT    5
 #define DOI_STACK_OVERFLOW "… and %d more"
 /* ── ignored apps ─────────────────────────────────────────────────────── */
-#define DOI_IGNORE_APPS   ""
+#define DOI_IGNORE_APPS   "flameshot"
 /* ═══════════════════════════════════════════════════════════════════════ */
 /*  MODULE OVERRIDES                                                       */
 /* ═══════════════════════════════════════════════════════════════════════ */

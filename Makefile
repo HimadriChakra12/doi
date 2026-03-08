@@ -15,7 +15,7 @@ CFLAGS  = -Wall -Wextra -pedantic -Wmissing-prototypes \
           -D_POSIX_C_SOURCE=200809L -std=c99
 
 DBUS_FLAGS  = $(shell pkg-config --cflags --libs dbus-1)
-X11_FLAGS   = -lX11 -lXft $(shell pkg-config --cflags --libs fontconfig freetype2 2>/dev/null)
+X11_FLAGS   = -lX11 -lXft -lXext $(shell pkg-config --cflags --libs fontconfig freetype2 2>/dev/null)
 
 FLAGS_C = $(CFLAGS) $(DBUS_FLAGS)
 FLAGS_D = $(CFLAGS) $(DBUS_FLAGS) $(X11_FLAGS)
@@ -113,5 +113,4 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(HIMADRI_MODULES),doi-$(m))
 		| grep ^DISPLAY= | cut -d= -f2-)" \
 	 HOME="/home/$(SUDO_USER)" \
 	 su $(SUDO_USER) -c "$(BINDIR)/doid" || true
-	@su $(SUDO_USER) -c "$(BINDIR)/doid" || true
 	@echo "--- done ---"
