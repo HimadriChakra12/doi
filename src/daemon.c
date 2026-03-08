@@ -33,24 +33,44 @@ static int    slot_count = 0;
 /* track stack depth per position for stacking */
 static int    stack_depth[3][3];
 
+static void reposition_slots(int px, int py, int removed_idx);
+
 static void sigchld_handler(int sig) {
         pid_t p; int i;
         (void)sig;
         while ((p = waitpid(-1, NULL, WNOHANG)) > 0) {
                 for (i = 0; i < slot_count; i++) {
-                        int px, py;
+                        int px, py, sidx;
                         if (slots[i].pid != p) continue;
-                        w_log("slot %s exited", slots[i].key);
+                        w_log("slot %s exited (sidx=%d)", slots[i].key, slots[i].stack_idx);
                         close(slots[i].write_fd);
-                        /* free stack position */
-                        px = slots[i].pos_x;
-                        py = slots[i].pos_y;
-                        if (stack_depth[px][py] > 0) stack_depth[px][py]--;
-                        /* compact */
+                        px   = slots[i].pos_x;
+                        py   = slots[i].pos_y;
+                        sidx = slots[i].stack_idx;
+                        /* compact slot table */
                         slots[i] = slots[slot_count-1];
                         slot_count--;
+                        /* decrement depth and slide remaining slots down */
+                        if (stack_depth[px][py] > 0) stack_depth[px][py]--;
+                        reposition_slots(px, py, sidx);
                         break;
                 }
+        }
+}
+
+/* send reposition message to all slots at (px,py) with stack_idx > removed */
+static void reposition_slots(int px, int py, int removed_idx) {
+        int i;
+        for (i = 0; i < slot_count; i++) {
+                if (slots[i].pos_x != px || slots[i].pos_y != py) continue;
+                if (slots[i].stack_idx <= removed_idx) continue;
+                slots[i].stack_idx--;
+                NotifUpdate u;
+                memset(&u, 0, sizeof(u));
+                u.msg_type      = DOI_MSG_REPOSITION;
+                u.new_stack_idx = slots[i].stack_idx;
+                write(slots[i].write_fd, &u, sizeof(u));
+                w_log("reposition slot %s -> sidx=%d", slots[i].key, slots[i].stack_idx);
         }
 }
 
@@ -131,7 +151,10 @@ static void send_update(Slot* s, const Notif* n) {
         u.bar_height = n->bar_height;
         u.min_height = n->min_height;
         u.offset_x   = n->offset_x;
-        u.offset_y   = n->offset_y;
+        u.offset_y      = n->offset_y;
+        u.border_radius = n->border_radius;
+        u.layout        = n->layout;
+        u.msg_type      = DOI_MSG_UPDATE;
         write(s->write_fd, &u, sizeof(u));
 }
 
@@ -179,6 +202,8 @@ static void read_hints(DBusMessageIter* it, Notif* n) {
                 INT_HINT("x-doi-offset-y",     offset_y)
                 INT_HINT("x-doi-show-icon",    show_icon)
                 INT_HINT("x-doi-show-body",    show_body)
+                INT_HINT("x-doi-border-radius",border_radius)
+                INT_HINT("x-doi-layout",       layout)
 
                 if (strcmp(key,"value")==0 && type==DBUS_TYPE_INT32) {
                         dbus_int32_t v;
@@ -259,9 +284,11 @@ static DBusHandlerResult handle(DBusConnection* conn,
                 n.bar_height = -1;
                 n.min_width  = -1;
                 n.min_height = -1;
-                n.offset_x   = -1;
-                n.offset_y   = -1;
-                n.pos_x      = DOI_POS_X;
+                n.offset_x      = -1;
+                n.offset_y      = -1;
+                n.border_radius = -1;
+                n.layout        = DOI_LAYOUT;
+                n.pos_x         = DOI_POS_X;
                 n.pos_y      = DOI_POS_Y;
                 n.timeout    = DOI_TIMEOUT;
                 n.doi_hints  = 0;
@@ -319,12 +346,18 @@ static DBusHandlerResult handle(DBusConnection* conn,
                                         w_log("ext replace slot id=%u->%u",
                                                 replace_id, next_id);
                                 } else {
-                                        snprintf(key, sizeof(key), "ext|%u",
-                                                next_id);
-                                        s = new_slot(key, n.pos_x, n.pos_y, &n);
-                                        if (s) send_update(s, &n);
-                                        w_log("ext new slot key=%s app=%s",
-                                                key, app_name);
+                                        int limit = DOI_STACK_LIMIT;
+                                        if (limit > 0 && stack_depth[n.pos_x][n.pos_y] >= limit) {
+                                                w_log("stack limit reached pos=%d,%d", n.pos_x, n.pos_y);
+                                                /* TODO: overflow mini-notif */
+                                        } else {
+                                                snprintf(key, sizeof(key), "ext|%u",
+                                                        next_id);
+                                                s = new_slot(key, n.pos_x, n.pos_y, &n);
+                                                if (s) send_update(s, &n);
+                                                w_log("ext new slot key=%s app=%s",
+                                                        key, app_name);
+                                        }
                                 }
                         }
                 }
