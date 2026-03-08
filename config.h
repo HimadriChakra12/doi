@@ -54,8 +54,8 @@
 #define DOI_BRIGHT_BORDER_COLOR "wheat"
 #define DOI_BRIGHT_BORDER       2
 #define DOI_BRIGHT_TIMEOUT      3
-#define DOI_BRIGHT_POS_X        DOI_LEFT
-#define DOI_BRIGHT_POS_Y        DOI_TOP
+#define DOI_BRIGHT_POS_X        DOI_CENTER
+#define DOI_BRIGHT_POS_Y        DOI_BOTTOM
 #define DOI_BRIGHT_MIN_WIDTH    250
 #define DOI_BRIGHT_BAR_WIDTH    250
 #define DOI_BRIGHT_BAR_HEIGHT   2
@@ -63,7 +63,7 @@
 #define DOI_BRIGHT_BAR_FG       "wheat"
 #define DOI_BRIGHT_MIN_HEIGHT   6
 #define DOI_BRIGHT_OFFSET_X     20
-#define DOI_BRIGHT_OFFSET_Y     20
+#define DOI_BRIGHT_OFFSET_Y     30
 #define DOI_BRIGHT_SYSFS        0
 #define DOI_BRIGHT_XBACKLIGHT   1
 #define DOI_BRIGHT_BACKEND      DOI_BRIGHT_SYSFS
