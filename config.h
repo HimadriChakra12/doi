@@ -19,9 +19,10 @@
 #define DOI_BG            "#282828"
 #define DOI_FG            "wheat"
 #define DOI_BORDER_COLOR  "wheat"
-#define DOI_BORDER        2
+#define DOI_BORDER        1
 #define DOI_BORDER_RADIUS 0
-#define DOI_LAYOUT        0          /* 0=brick (auto width) 1=block (fixed)*/
+/* 0=brick (auto width) 1=block (fixed)*/
+#define DOI_LAYOUT        0
 #define DOI_PADDING       10
 #define DOI_MARGIN        3
 #define DOI_MIN_WIDTH     260
