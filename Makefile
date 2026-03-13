@@ -97,20 +97,9 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(HIMADRI_MODULES),doi-$(m))
 	done
 	@install -Dm755 $(MOD)/screenshot.sh $(BINDIR)/doi-screenshot
 	@echo "--- creating ~/.doi ---"
-	@su $(SUDO_USER) -c "mkdir -p /home/$(SUDO_USER)/.doi"
+	@su $(SUDO_USER) -c "mkdir -p ~/.doi"
 	@echo "--- restarting doid ---"
 	@pkill -TERM doid 2>/dev/null || true
 	@sleep 0.3
-	@pkill -KILL doid 2>/dev/null || true
-	@pkill -KILL -f "doi-bright" 2>/dev/null || true
-	@pkill -KILL -f "doi-volume" 2>/dev/null || true
-	@sleep 0.2
-	@DBUS_SESSION_BUS_ADDRESS="$$(cat /proc/$$(pgrep -u $(SUDO_USER) i3 \
-		| head -1)/environ 2>/dev/null | tr '\0' '\n' \
-		| grep DBUS_SESSION_BUS_ADDRESS | cut -d= -f2-)" \
-	 DISPLAY="$$(cat /proc/$$(pgrep -u $(SUDO_USER) i3 \
-		| head -1)/environ 2>/dev/null | tr '\0' '\n' \
-		| grep ^DISPLAY= | cut -d= -f2-)" \
-	 HOME="/home/$(SUDO_USER)" \
-	 su $(SUDO_USER) -c "$(BINDIR)/doid" || true
+	@su $(SUDO_USER) -c "DISPLAY=:0 $(BINDIR)/doid &"
 	@echo "--- done ---"
