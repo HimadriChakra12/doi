@@ -66,8 +66,13 @@ clean:
 install: $(OUTPUT_C) $(OUTPUT_D)
 	@install -Dm755 $(OUTPUT_C) $(BINDIR)/doi
 	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doid
+	@install -Dm644 doid.service /etc/systemd/system/doid.service
+	@systemctl daemon-reload
+	@systemctl enable doid
 	@echo "installed doi  -> $(BINDIR)/doi"
 	@echo "installed doid -> $(BINDIR)/doid"
+	@echo "installed systemd service -> /etc/systemd/system/doid.service"
+
 
 install-modules:
 	@for m in $(MODULES); do \
@@ -84,33 +89,3 @@ install-modules:
 	fi
 
 install-all: install install-modules
-
-himadri: MODULES = $(HIMADRI_MODULES)
-himadri: $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(HIMADRI_MODULES),doi-$(m))
-	@echo "--- installing doi + doid ---"
-	@install -Dm755 $(OUTPUT_C) $(BINDIR)/doi
-	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doid
-	@echo "--- installing modules: $(HIMADRI_MODULES) ---"
-	@for m in $(HIMADRI_MODULES); do \
-		install -Dm755 "doi-$$m" "$(BINDIR)/doi-$$m"; \
-		echo "installed doi-$$m -> $(BINDIR)/doi-$$m"; \
-	done
-	@install -Dm755 $(MOD)/screenshot.sh $(BINDIR)/doi-screenshot
-	@echo "--- creating ~/.doi ---"
-	@su $(SUDO_USER) -c "mkdir -p /home/$(SUDO_USER)/.doi"
-	@echo "--- restarting doid ---"
-	@pkill -TERM doid 2>/dev/null || true
-	@sleep 0.3
-	@pkill -KILL doid 2>/dev/null || true
-	@pkill -KILL -f "doi-bright" 2>/dev/null || true
-	@pkill -KILL -f "doi-volume" 2>/dev/null || true
-	@sleep 0.2
-	@DBUS_SESSION_BUS_ADDRESS="$$(cat /proc/$$(pgrep -u $(SUDO_USER) i3 \
-		| head -1)/environ 2>/dev/null | tr '\0' '\n' \
-		| grep DBUS_SESSION_BUS_ADDRESS | cut -d= -f2-)" \
-	 DISPLAY="$$(cat /proc/$$(pgrep -u $(SUDO_USER) i3 \
-		| head -1)/environ 2>/dev/null | tr '\0' '\n' \
-		| grep ^DISPLAY= | cut -d= -f2-)" \
-	 HOME="/home/$(SUDO_USER)" \
-	 su $(SUDO_USER) -c "$(BINDIR)/doid" || true
-	@echo "--- done ---"
