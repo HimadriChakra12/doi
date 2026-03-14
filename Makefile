@@ -102,4 +102,10 @@ himadri: $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(HIMADRI_MODULES),doi-$(m))
 	@pkill -TERM doid 2>/dev/null || true
 	@sleep 0.3
 	@su $(SUDO_USER) -c "DISPLAY=:0 $(BINDIR)/doid &"
+	@install -Dm644 doid.service /etc/systemd/system/doid.service
+	@systemctl daemon-reload
+	@systemctl enable doid
+	@echo "installed doi  -> $(BINDIR)/doi"
+	@echo "installed doid -> $(BINDIR)/doid"
+	@echo "installed systemd service -> /etc/systemd/system/doid.service"
 	@echo "--- done ---"
