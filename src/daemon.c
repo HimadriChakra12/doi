@@ -376,13 +376,6 @@ int main(void) {
         DBusError err;
         struct sigaction sa;
         int ret;
-        pid_t pid;
-
-        pid = fork();
-        if (pid < 0) return EXIT_FAILURE;
-        if (pid > 0) return EXIT_SUCCESS;
-        if (setsid() < 0) return EXIT_FAILURE;
-        chdir("/");
 
         {
                 const char *home = getenv("HOME");
@@ -419,8 +412,7 @@ int main(void) {
 
         log_write("doid started");
 
-        while (dbus_connection_read_write_dispatch(conn, -1))
-                ;
+        while (dbus_connection_read_write_dispatch(conn, -1));
 
         return EXIT_SUCCESS;
 }

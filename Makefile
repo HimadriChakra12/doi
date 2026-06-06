@@ -48,9 +48,9 @@ doi-med: $(MOD)/media.c $(MOD)/module.c $(MOD)/module.h config.h
 install: doid doi
 	install -Dm755 doid $(DESTDIR)$(BINDIR)/doid
 	install -Dm755 doi  $(DESTDIR)$(BINDIR)/doi
-	install -Dm644 doid.service $(HOME)/.config/systemd/user/doid.service
-	systemctl --user daemon-reload
-	systemctl --user enable --now doid
+	install -Dm644 doid.service /etc/systemd/system/doid.service
+	systemctl daemon-reload
+	systemctl enable --now doid
 	@echo "installed -> $(BINDIR)/{doi,doid}"
 
 install-modules:
