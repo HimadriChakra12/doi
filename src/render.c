@@ -14,344 +14,333 @@
 #include "log.h"
 #include "../config.h"
 
-/* ── helpers ──────────────────────────────────────────────────────────── */
-
-static unsigned long xcolor(Display* d, int s, const char* n) {
-        XColor c, dummy;
-        XAllocNamedColor(d, DefaultColormap(d,s), n, &c, &dummy);
-        return c.pixel;
+static unsigned long xcolor(Display *dpy, int screen, const char *name) {
+        XColor exact, alloc;
+        XAllocNamedColor(dpy, DefaultColormap(dpy, screen), name, &alloc, &exact);
+        return alloc.pixel;
 }
 
-static int win_x(Display* d, int s, int w, int px, int ox) {
-        int sw = DisplayWidth(d,s);
-        if (px == DOI_LEFT)  return ox;
-        if (px == DOI_RIGHT) return sw - w - ox;
-        return (sw - w) / 2;
-}
-
-static int win_y(Display* d, int s, int h, int py, int oy, int idx) {
-        int sh = DisplayHeight(d,s);
-        int step = DOI_NOTIF_HEIGHT + DOI_STACK_GAP;
-        if (py == DOI_TOP)    return oy + idx * step;
-        if (py == DOI_BOTTOM) return sh - h - oy - idx * step;
-        return (sh - h) / 2 + idx * step;
-}
-
-static int utf8w(Display* d, XftFont* f, const char* s, int len) {
-        XGlyphInfo e;
+static int text_width(Display *dpy, XftFont *font, const char *s, int len) {
+        XGlyphInfo ext;
         if (!s || len <= 0) return 0;
-        XftTextExtentsUtf8(d, f, (const FcChar8*)s, len, &e);
-        return e.xOff;
+        XftTextExtentsUtf8(dpy, font, (const FcChar8 *)s, len, &ext);
+        return ext.xOff;
 }
 
-/* ── rounded-rect clip mask ───────────────────────────────────────────── */
+static void apply_rounded_corners(Display *dpy, Window win, int w, int h, int r) {
+        Pixmap mask;
+        GC gc;
+        int d2;
 
-static void apply_border_radius(Display* dpy, Window win, int w, int h, int r) {
         if (r <= 0) return;
-        Pixmap mask = XCreatePixmap(dpy, win, w, h, 1);
-        GC mgc = XCreateGC(dpy, mask, 0, NULL);
+        mask = XCreatePixmap(dpy, win, w, h, 1);
+        gc   = XCreateGC(dpy, mask, 0, NULL);
+        d2   = r * 2;
 
-        /* clear to transparent */
-        XSetForeground(dpy, mgc, 0);
-        XFillRectangle(dpy, mask, mgc, 0, 0, w, h);
+        XSetForeground(dpy, gc, 0);
+        XFillRectangle(dpy, mask, gc, 0, 0, w, h);
+        XSetForeground(dpy, gc, 1);
 
-        XSetForeground(dpy, mgc, 1);
-        /* four corner arcs */
-        int d2 = r * 2;
-        XFillArc(dpy, mask, mgc, 0,     0,     d2, d2, 90*64,  90*64);
-        XFillArc(dpy, mask, mgc, w-d2,  0,     d2, d2, 0,      90*64);
-        XFillArc(dpy, mask, mgc, 0,     h-d2,  d2, d2, 180*64, 90*64);
-        XFillArc(dpy, mask, mgc, w-d2,  h-d2,  d2, d2, 270*64, 90*64);
-        /* fill inner rects */
-        XFillRectangle(dpy, mask, mgc, r, 0,   w-d2, h);
-        XFillRectangle(dpy, mask, mgc, 0, r,   w,    h-d2);
+        XFillArc(dpy, mask, gc, 0,    0,    d2, d2, 90*64,  90*64);
+        XFillArc(dpy, mask, gc, w-d2, 0,    d2, d2, 0,      90*64);
+        XFillArc(dpy, mask, gc, 0,    h-d2, d2, d2, 180*64, 90*64);
+        XFillArc(dpy, mask, gc, w-d2, h-d2, d2, d2, 270*64, 90*64);
+        XFillRectangle(dpy, mask, gc, r, 0,   w-d2, h);
+        XFillRectangle(dpy, mask, gc, 0, r,   w,    h-d2);
 
         XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, mask, ShapeSet);
-        XFreeGC(dpy, mgc);
+        XFreeGC(dpy, gc);
         XFreePixmap(dpy, mask);
 }
 
-/* ── measure ──────────────────────────────────────────────────────────── */
+static int window_x(Display *dpy, int screen, int win_w, int pos_x, int offset_x) {
+        int screen_w = DisplayWidth(dpy, screen);
+        if (pos_x == LEFT)  return offset_x;
+        if (pos_x == RIGHT) return screen_w - win_w - offset_x;
+        return (screen_w - win_w) / 2;
+}
 
-static void measure(Display* dpy, XftFont* font, int text_h,
-                const NotifUpdate* u, int* out_w, int* out_h) {
-        int border    = (u->border >= 0)    ? u->border    : DOI_BORDER;
-        int min_width = (u->min_width > 0)  ? u->min_width : DOI_MIN_WIDTH;
-        int bw        = (u->bar_width  > 0) ? u->bar_width : DOI_BAR_WIDTH;
-        int bh        = (u->bar_height > 0) ? u->bar_height: DOI_BAR_HEIGHT;
-        int show_icon = (u->show_icon >= 0) ? u->show_icon : DOI_SHOW_ICON;
-        int show_body = (u->show_body >= 0) ? u->show_body : DOI_SHOW_BODY;
-        int layout    = u->layout;  /* 0=brick, 1=block */
-        int inner     = border + DOI_MARGIN + DOI_PADDING;
+static int window_y(Display *dpy, int screen, int win_h, int pos_y, int offset_y, int stack_index) {
+        int screen_h = DisplayHeight(dpy, screen);
+        int step     = NOTIF_HEIGHT + STACK_GAP;
+        if (pos_y == TOP)    return offset_y + stack_index * step;
+        if (pos_y == BOTTOM) return screen_h - win_h - offset_y - stack_index * step;
+        return (screen_h - win_h) / 2 + stack_index * step;
+}
+
+static void measure(Display *dpy, XftFont *font,
+                    const NotifMsg *m, int *out_w, int *out_h) {
+        int border    = m->border    >= 0 ? m->border    : BORDER;
+        int min_w     = m->min_width  > 0 ? m->min_width  : MIN_WIDTH;
+        int bar_w     = m->bar_width  > 0 ? m->bar_width  : BAR_WIDTH;
+        int show_icon = m->show_icon >= 0 ? m->show_icon : SHOW_ICON;
+        int show_body = m->show_body >= 0 ? m->show_body : SHOW_BODY;
+        int inset     = border + MARGIN;  /* from edge to content area start */
         int screen    = DefaultScreen(dpy);
+        int max_w     = DisplayWidth(dpy, screen) * MAX_WIDTH_PCT / 100;
+        int win_w, win_h;
 
-        int win_w;
-        if (layout == 1) {
-                /* block: fixed width = min_width */
-                win_w = min_width;
+        if (m->layout == 1) {
+                win_w = min_w;
         } else {
-                /* brick: auto width from content */
-                int sum_w = 0, body_w = 0;
-                if (show_icon && u->icon[0])
-                        sum_w += utf8w(dpy, font, u->icon, strlen(u->icon)) + DOI_PADDING;
-                if (u->summary[0])
-                        sum_w += utf8w(dpy, font, u->summary, strlen(u->summary));
-                if (show_body && u->body[0]) {
-                        const char* line = u->body; const char* nl;
+                int content_w = 0;
+                int row_w     = 0;
+
+                if (show_icon && m->icon[0])
+                        row_w += text_width(dpy, font, m->icon, strlen(m->icon)) + PADDING;
+                if (m->summary[0])
+                        row_w += text_width(dpy, font, m->summary, strlen(m->summary));
+                content_w = row_w;
+
+                if (show_body && m->body[0]) {
+                        const char *line = m->body;
                         while (line) {
-                                nl = strchr(line, '\n');
-                                int len = nl ? (int)(nl-line) : (int)strlen(line);
-                                int w = utf8w(dpy, font, line, len);
-                                if (w > body_w) body_w = w;
-                                line = nl ? nl+1 : NULL;
+                                const char *nl = strchr(line, '\n');
+                                int len = nl ? (int)(nl - line) : (int)strlen(line);
+                                int w   = text_width(dpy, font, line, len);
+                                if (w > content_w) content_w = w;
+                                line = nl ? nl + 1 : NULL;
                         }
                 }
-                int content_w = sum_w > body_w ? sum_w : body_w;
-                if (u->show_bar && bw > content_w) content_w = bw;
-                win_w = inner * 2 + content_w;
-                if (win_w < min_width) win_w = min_width;
-                int max_w = DisplayWidth(dpy, screen) * DOI_MAX_WIDTH_PCT / 100;
+
+                if (m->show_bar && bar_w > content_w)
+                        content_w = bar_w;
+
+                win_w = inset * 2 + PADDING * 2 + content_w;
+                if (win_w < min_w) win_w = min_w;
                 if (win_w > max_w) win_w = max_w;
         }
 
-        /* height: always fixed to DOI_NOTIF_HEIGHT */
-        int win_h = DOI_NOTIF_HEIGHT;
-        if (u->min_height > 0 && win_h < u->min_height)
-                win_h = u->min_height;
-        (void)bh; (void)text_h;
+        win_h = NOTIF_HEIGHT;
+        if (m->min_height > 0 && win_h < m->min_height)
+                win_h = m->min_height;
+
         *out_w = win_w;
         *out_h = win_h;
 }
 
-/* ── paint ────────────────────────────────────────────────────────────── */
+static void paint(Display *dpy, int screen, Window win, GC gc,
+                  XftFont *font, int line_h,
+                  int win_w, int win_h,
+                  const NotifMsg *m,
+                  int pos_x, int pos_y, int stack_index) {
+        int border   = m->border        >= 0 ? m->border        : BORDER;
+        int radius   = m->border_radius  > 0 ? m->border_radius  : BORDER_RADIUS;
+        int bar_w    = m->bar_width      > 0 ? m->bar_width      : BAR_WIDTH;
+        int bar_h    = m->bar_height     > 0 ? m->bar_height     : BAR_HEIGHT;
+        int offset_x = m->offset_x      >= 0 ? m->offset_x      : OFFSET_X;
+        int offset_y = m->offset_y      >= 0 ? m->offset_y      : OFFSET_Y;
+        int show_icon = m->show_icon    >= 0 ? m->show_icon      : SHOW_ICON;
+        int show_body = m->show_body    >= 0 ? m->show_body      : SHOW_BODY;
 
-static void paint(Display* dpy, int screen, Window win, GC gc,
-                XftFont* font, int text_h,
-                int win_w, int win_h,
-                const NotifUpdate* u,
-                int pos_x, int pos_y, int stack_idx) {
-        int border   = (u->border >= 0)      ? u->border      : DOI_BORDER;
-        int radius   = (u->border_radius > 0) ? u->border_radius : DOI_BORDER_RADIUS;
-        const char* bg  = u->bg[0]           ? u->bg           : DOI_BG;
-        const char* fg  = u->fg[0]           ? u->fg           : DOI_FG;
-        const char* brc = u->border_color[0] ? u->border_color : DOI_BORDER_COLOR;
-        const char* bfg = u->bar_fg[0]       ? u->bar_fg       : DOI_BAR_FG;
-        const char* bbg = u->bar_bg[0]       ? u->bar_bg       : DOI_BAR_BG;
-        int bw  = (u->bar_width  > 0) ? u->bar_width  : DOI_BAR_WIDTH;
-        int bh  = (u->bar_height > 0) ? u->bar_height : DOI_BAR_HEIGHT;
-        int ox  = (u->offset_x >= 0)  ? u->offset_x  : DOI_OFFSET_X;
-        int oy  = (u->offset_y >= 0)  ? u->offset_y  : DOI_OFFSET_Y;
-        int show_icon = (u->show_icon >= 0) ? u->show_icon : DOI_SHOW_ICON;
-        int show_body = (u->show_body >= 0) ? u->show_body : DOI_SHOW_BODY;
-        int i;
+        const char *bg  = m->bg[0]           ? m->bg           : BG;
+        const char *fg  = m->fg[0]           ? m->fg           : FG;
+        const char *brc = m->border_color[0] ? m->border_color : BORDER_COLOR;
+        const char *bfg = m->bar_fg[0]       ? m->bar_fg       : BAR_FG;
+        const char *bbg = m->bar_bg[0]       ? m->bar_bg       : BAR_BG;
 
-        /* move */
-        int wx = win_x(dpy, screen, win_w, pos_x, ox);
-        int wy = win_y(dpy, screen, win_h, pos_y, oy, stack_idx);
+        int wx = window_x(dpy, screen, win_w, pos_x, offset_x);
+        int wy = window_y(dpy, screen, win_h, pos_y, offset_y, stack_index);
         XMoveWindow(dpy, win, wx, wy);
 
-        /* apply rounded clip */
-        apply_border_radius(dpy, win, win_w, win_h, radius);
+        apply_rounded_corners(dpy, win, win_w, win_h, radius);
 
-        /* clear bg */
         XSetForeground(dpy, gc, xcolor(dpy, screen, bg));
         XFillRectangle(dpy, win, gc, 0, 0, win_w, win_h);
 
-        /* border */
         if (border > 0) {
+                int i;
                 XSetForeground(dpy, gc, xcolor(dpy, screen, brc));
                 for (i = 0; i < border; i++)
-                        XDrawRectangle(dpy, win, gc, i, i,
-                                win_w-1-i*2, win_h-1-i*2);
+                        XDrawRectangle(dpy, win, gc, i, i, win_w-1-i*2, win_h-1-i*2);
         }
 
-        /* text */
-        XftDraw* xd = XftDrawCreate(dpy, win,
-                DefaultVisual(dpy,screen), DefaultColormap(dpy,screen));
-        XftColor col;
-        XftColorAllocName(dpy, DefaultVisual(dpy,screen),
-                DefaultColormap(dpy,screen), fg, &col);
+        /* text content */
+        {
+                XftDraw  *xd;
+                XftColor  col;
+                int inset    = border + MARGIN;
+                int text_x   = inset + PADDING;
+                int body_lines = 0;
+                int bar_lines  = 0;
+                int total_h, start_y, cur_y;
+                const char *line;
 
-        int border_m = border + DOI_MARGIN;
-        int tx = border_m + DOI_PADDING;
-
-        /* count body lines for vertical centering */
-        int body_lines = 0;
-        if (show_body && u->body[0]) {
-                const char* p = u->body;
-                while (p) {
-                        body_lines++;
-                        p = strchr(p, '\n');
-                        if (p) p++;
+                if (show_body && m->body[0]) {
+                        const char *p = m->body;
+                        while (p) { body_lines++; p = strchr(p, '\n'); if (p) p++; }
                 }
-        }
-        int content_h = text_h
-                + (body_lines ? body_lines * (text_h + DOI_PADDING) : 0)
-                + (u->show_bar ? bh + DOI_PADDING * 2 : 0);
+                if (m->show_bar) bar_lines = 1;
 
-        int cur_y = border_m + (win_h - border_m * 2 - content_h) / 2 + text_h;
-        if (cur_y < border_m + text_h) cur_y = border_m + text_h;
+                /* total height of all rendered content */
+                total_h = line_h                                  /* summary row */
+                        + (body_lines * (line_h + PADDING))
+                        + (bar_lines  * (bar_h  + PADDING * 2));
 
-        if (show_icon && u->icon[0]) {
-                int iw = utf8w(dpy, font, u->icon, strlen(u->icon));
-                XftDrawStringUtf8(xd, &col, font, tx, cur_y,
-                        (const FcChar8*)u->icon, strlen(u->icon));
-                tx += iw + DOI_PADDING;
-        }
-        if (u->summary[0])
-                XftDrawStringUtf8(xd, &col, font, tx, cur_y,
-                        (const FcChar8*)u->summary, strlen(u->summary));
+                /* vertically centre within inner box */
+                start_y = inset + (win_h - inset * 2 - total_h) / 2 + line_h;
+                if (start_y < inset + line_h) start_y = inset + line_h;
 
-        cur_y += DOI_PADDING;
+                xd = XftDrawCreate(dpy, win,
+                        DefaultVisual(dpy, screen), DefaultColormap(dpy, screen));
+                XftColorAllocName(dpy, DefaultVisual(dpy, screen),
+                        DefaultColormap(dpy, screen), fg, &col);
 
-        if (show_body && u->body[0]) {
-                const char* line = u->body; const char* nl;
-                while (line && *line) {
-                        nl = strchr(line, '\n');
-                        int len = nl ? (int)(nl-line) : (int)strlen(line);
-                        cur_y += text_h;
-                        if (len > 0)
-                                XftDrawStringUtf8(xd, &col, font,
-                                        border_m + DOI_PADDING, cur_y,
-                                        (const FcChar8*)line, len);
-                        cur_y += DOI_PADDING;
-                        line = nl ? nl+1 : NULL;
+                cur_y = start_y;
+
+                if (show_icon && m->icon[0]) {
+                        int iw = text_width(dpy, font, m->icon, strlen(m->icon));
+                        XftDrawStringUtf8(xd, &col, font, text_x, cur_y,
+                                (const FcChar8 *)m->icon, strlen(m->icon));
+                        text_x += iw + PADDING;
                 }
-        }
 
-        if (u->show_bar) {
-                int filled = bw * u->bar_value / 100;
-                cur_y += DOI_PADDING;
-                XSetForeground(dpy, gc, xcolor(dpy, screen, bbg));
-                XFillRectangle(dpy, win, gc, border_m + DOI_PADDING, cur_y, bw, bh);
-                if (filled > 0) {
-                        XSetForeground(dpy, gc, xcolor(dpy, screen, bfg));
-                        XFillRectangle(dpy, win, gc,
-                                border_m + DOI_PADDING, cur_y, filled, bh);
+                if (m->summary[0])
+                        XftDrawStringUtf8(xd, &col, font, text_x, cur_y,
+                                (const FcChar8 *)m->summary, strlen(m->summary));
+
+                if (show_body && m->body[0]) {
+                        line = m->body;
+                        while (line && *line) {
+                                const char *nl = strchr(line, '\n');
+                                int len = nl ? (int)(nl - line) : (int)strlen(line);
+                                cur_y += line_h + PADDING;
+                                if (len > 0)
+                                        XftDrawStringUtf8(xd, &col, font,
+                                                inset + PADDING, cur_y,
+                                                (const FcChar8 *)line, len);
+                                line = nl ? nl + 1 : NULL;
+                        }
                 }
+
+                if (m->show_bar) {
+                        int bar_x  = inset + PADDING;
+                        int bar_y  = cur_y + PADDING * 2;
+                        int filled = bar_w * m->bar_value / 100;
+
+                        XSetForeground(dpy, gc, xcolor(dpy, screen, bbg));
+                        XFillRectangle(dpy, win, gc, bar_x, bar_y, bar_w, bar_h);
+
+                        if (filled > 0) {
+                                XSetForeground(dpy, gc, xcolor(dpy, screen, bfg));
+                                XFillRectangle(dpy, win, gc, bar_x, bar_y, filled, bar_h);
+                        }
+                }
+
+                XftColorFree(dpy, DefaultVisual(dpy, screen),
+                        DefaultColormap(dpy, screen), &col);
+                XftDrawDestroy(xd);
         }
 
-        XftColorFree(dpy, DefaultVisual(dpy,screen),
-                DefaultColormap(dpy,screen), &col);
-        XftDrawDestroy(xd);
         XFlush(dpy);
 }
 
-/* ── render loop ──────────────────────────────────────────────────────── */
-
-void render_loop(int read_fd, Notif* initial) {
-        Display* dpy;
+void render_loop(int read_fd, Notif *initial) {
+        Display *dpy;
         int screen;
         Window win;
         GC gc;
-        XSetWindowAttributes att;
+        XSetWindowAttributes attrs;
         XGCValues gcv;
-        XftFont* font;
+        XftFont *font;
         XEvent ev;
         int x11_fd;
         int win_w = 0, win_h = 0;
         int visible = 0;
-        NotifUpdate cur;
-        int pos_x     = initial->pos_x;
-        int pos_y     = initial->pos_y;
-        int stack_idx = initial->stack_index;
-        struct timeval tv_store, *tv = NULL;
+        NotifMsg cur;
+        int pos_x      = initial->pos_x;
+        int pos_y      = initial->pos_y;
+        int stack_index = initial->stack_index;
+        struct timeval tv_buf, *tv = NULL;
 
         setlocale(LC_ALL, "");
 
         dpy = XOpenDisplay(NULL);
-        if (!dpy) { w_log("render: cannot open display"); return; }
+        if (!dpy) { log_write("render: cannot open display"); return; }
         screen = DefaultScreen(dpy);
 
-        font = XftFontOpenName(dpy, screen, DOI_FONT);
+        font = XftFontOpenName(dpy, screen, FONT);
         if (!font) font = XftFontOpenName(dpy, screen, "monospace:size=10");
-        if (!font) { w_log("render: no font"); XCloseDisplay(dpy); return; }
+        if (!font) { log_write("render: no font"); XCloseDisplay(dpy); return; }
 
-        int text_h = font->ascent + font->descent;
-
-        att.background_pixel  = xcolor(dpy, screen, DOI_BG);
-        att.override_redirect = True;
+        attrs.background_pixel  = xcolor(dpy, screen, BG);
+        attrs.override_redirect = True;
         win = XCreateWindow(dpy, DefaultRootWindow(dpy),
                 0, 0, 200, 40, 0,
                 CopyFromParent, InputOutput, CopyFromParent,
-                CWBackPixel|CWOverrideRedirect, &att);
-        XSelectInput(dpy, win,
-                ButtonPressMask|StructureNotifyMask|ExposureMask);
-        gcv.foreground = xcolor(dpy, screen, DOI_FG);
+                CWBackPixel | CWOverrideRedirect, &attrs);
+        XSelectInput(dpy, win, ButtonPressMask | ExposureMask);
+        gcv.foreground = xcolor(dpy, screen, FG);
         gc = XCreateGC(dpy, win, GCForeground, &gcv);
+
         x11_fd = ConnectionNumber(dpy);
         fcntl(read_fd, F_SETFL, O_NONBLOCK);
         XFlush(dpy);
 
-        while (1) {
+        for (;;) {
                 fd_set fds;
+                int maxfd;
+                NotifMsg msg;
+                ssize_t n;
+
                 FD_ZERO(&fds);
                 FD_SET(x11_fd, &fds);
                 FD_SET(read_fd, &fds);
-                int maxfd = x11_fd > read_fd ? x11_fd : read_fd;
+                maxfd = x11_fd > read_fd ? x11_fd : read_fd;
 
-                /* drain pipe */
-                {
-                        NotifUpdate u;
-                        ssize_t n = read(read_fd, &u, sizeof(u));
-                        if (n == (ssize_t)sizeof(u)) {
-                                if (u.msg_type == DOI_MSG_REPOSITION) {
-                                        /* just move window, keep current content */
-                                        stack_idx = u.new_stack_idx;
-                                        if (visible)
-                                                paint(dpy, screen, win, gc, font,
-                                                        text_h, win_w, win_h, &cur,
-                                                        pos_x, pos_y, stack_idx);
-                                } else {
-                                        /* full update */
-                                        cur = u;
-                                        measure(dpy, font, text_h, &u, &win_w, &win_h);
-                                        XResizeWindow(dpy, win, win_w, win_h);
-                                        if (!visible) {
-                                                XMapRaised(dpy, win);
-                                                visible = 1;
-                                        }
-                                        int timeout = (u.timeout > 0) ? u.timeout : DOI_TIMEOUT;
-                                        if (timeout > 0) {
-                                                tv_store.tv_sec  = timeout;
-                                                tv_store.tv_usec = 0;
-                                                tv = &tv_store;
-                                        } else {
-                                                tv = NULL;
-                                        }
-                                        paint(dpy, screen, win, gc, font, text_h,
-                                                win_w, win_h, &cur,
-                                                pos_x, pos_y, stack_idx);
+                n = read(read_fd, &msg, sizeof(msg));
+                if (n == (ssize_t)sizeof(msg)) {
+                        if (msg.msg_type == MSG_REPOSITION) {
+                                stack_index = msg.new_stack_index;
+                                if (visible)
+                                        paint(dpy, screen, win, gc, font,
+                                              font->ascent + font->descent,
+                                              win_w, win_h, &cur,
+                                              pos_x, pos_y, stack_index);
+                        } else {
+                                int timeout;
+                                cur = msg;
+                                measure(dpy, font, &msg, &win_w, &win_h);
+                                XResizeWindow(dpy, win, win_w, win_h);
+                                if (!visible) {
+                                        XMapRaised(dpy, win);
+                                        visible = 1;
                                 }
-                                continue;
+                                paint(dpy, screen, win, gc, font,
+                                      font->ascent + font->descent,
+                                      win_w, win_h, &cur,
+                                      pos_x, pos_y, stack_index);
+                                timeout = msg.timeout > 0 ? msg.timeout : TIMEOUT;
+                                if (timeout > 0) {
+                                        tv_buf.tv_sec  = timeout;
+                                        tv_buf.tv_usec = 0;
+                                        tv = &tv_buf;
+                                } else {
+                                        tv = NULL;
+                                }
                         }
+                        continue;
                 }
 
                 if (!XPending(dpy)) {
-                        int r = select(maxfd+1, &fds, NULL, NULL, tv);
-                        if (r == 0) {
-                                w_log("render: timeout pid=%d sidx=%d",
-                                        (int)getpid(), stack_idx);
-                                goto done;
-                        }
-                        if (r < 0) continue;
+                        int r = select(maxfd + 1, &fds, NULL, NULL, tv);
+                        if (r == 0) goto done;
+                        if (r < 0)  continue;
                         if (FD_ISSET(read_fd, &fds)) continue;
                 }
 
                 while (XPending(dpy)) {
                         XNextEvent(dpy, &ev);
-                        switch (ev.type) {
-                        case Expose:
-                                if (visible && ev.xexpose.count == 0)
-                                        paint(dpy, screen, win, gc, font,
-                                                text_h, win_w, win_h, &cur,
-                                                pos_x, pos_y, stack_idx);
-                                break;
-                        case ButtonPress:
+                        if (ev.type == Expose && ev.xexpose.count == 0 && visible)
+                                paint(dpy, screen, win, gc, font,
+                                      font->ascent + font->descent,
+                                      win_w, win_h, &cur,
+                                      pos_x, pos_y, stack_index);
+                        if (ev.type == ButtonPress)
                                 goto done;
-                        }
                 }
         }
+
 done:
         if (visible) XUnmapWindow(dpy, win);
         XFreeGC(dpy, gc);

@@ -1,13 +1,13 @@
 [Unit]
-Description=Doid Daemon
-After=network.target
+Description=doi notification daemon
+After=graphical-session.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/doid
-Restart=always
-RestartSec=3
-User=root
+ExecStart=%h/.local/bin/doid
+Restart=on-failure
+RestartSec=2
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical-session.target

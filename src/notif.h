@@ -2,12 +2,14 @@
 #define DOI_NOTIF_H
 
 typedef struct {
-        char* summary;
-        char* body;
-        char* icon;
-        char* bg;
-        char* fg;
-        char* border_color;
+        char *summary;
+        char *body;
+        char *icon;
+        char *bg;
+        char *fg;
+        char *border_color;
+        char *bar_fg;
+        char *bar_bg;
         int   border;
         int   border_radius;
         int   timeout;
@@ -23,16 +25,13 @@ typedef struct {
         int   bar_value;
         int   bar_width;
         int   bar_height;
-        char* bar_fg;
-        char* bar_bg;
         int   stack_index;
-        int   doi_hints;
-        int   layout;         /* 0=brick (auto width), 1=block (fixed width) */
+        int   from_module;  /* 1 = doi module (persistent slot), 0 = external app */
+        int   layout;       /* 0 = brick (auto width), 1 = block (fixed width) */
 } Notif;
 
-/* pipe message types */
-#define DOI_MSG_UPDATE     1
-#define DOI_MSG_REPOSITION 2
+#define MSG_UPDATE     1
+#define MSG_REPOSITION 2
 
 typedef struct {
         int  msg_type;
@@ -58,9 +57,9 @@ typedef struct {
         int  bar_width;
         int  bar_height;
         int  layout;
-        int  new_stack_idx;   /* used by DOI_MSG_REPOSITION */
-} NotifUpdate;
+        int  new_stack_index;
+} NotifMsg;
 
-void render_loop(int read_fd, Notif* initial);
+void render_loop(int read_fd, Notif *initial);
 
 #endif

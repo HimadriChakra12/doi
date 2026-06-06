@@ -1,4 +1,4 @@
 #ifndef DOI_LOG_H
 #define DOI_LOG_H
-void w_log(const char* fmt, ...);
+void log_write(const char *fmt, ...);
 #endif

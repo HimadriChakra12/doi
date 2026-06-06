@@ -1,3 +1,3 @@
-- Block/Brick
-- Border Radius
-- Stack Number
+- stack overflow mini-notif when STACK_LIMIT reached
+- block layout mode (fixed-width centering)
+- border radius on progress bar

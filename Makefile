@@ -1,92 +1,67 @@
-# doi Makefile
-# Usage:
-#   make                          - build doid and doi
-#   make MODULES="volume bright"  - build with modules
-#   make MODULES=all              - build all modules
-#   make install                  - install doid + doi
-#   make install-modules          - install built modules
-#   make install-all              - install everything
-#   sudo make himadri             - build + install + modules + restart doid
-#   make clean
+# doi — build system
+# make                   build doid + doi
+# make MODULES="vol bri" build with modules (vol, bri, med)
+# make MODULES=all       build all modules
+# make install           install to PREFIX (default /usr/local)
+# make install-modules   install built modules
+# make clean
 
-CC      = gcc
-CFLAGS  = -Wall -Wextra -pedantic -Wmissing-prototypes \
-          -Wstrict-prototypes -Wold-style-definition \
-          -D_POSIX_C_SOURCE=200809L -std=c99
+CC     = gcc
+CFLAGS = -Wall -Wextra -pedantic -std=c99 -D_POSIX_C_SOURCE=200809L
 
-DBUS_FLAGS  = $(shell pkg-config --cflags --libs dbus-1)
-X11_FLAGS   = -lX11 -lXft -lXext $(shell pkg-config --cflags --libs fontconfig freetype2 2>/dev/null)
+DBUS  = $(shell pkg-config --cflags --libs dbus-1)
+X11   = -lX11 -lXft -lXext $(shell pkg-config --cflags --libs fontconfig freetype2 2>/dev/null)
 
-FLAGS_C = $(CFLAGS) $(DBUS_FLAGS)
-FLAGS_D = $(CFLAGS) $(DBUS_FLAGS) $(X11_FLAGS)
-FLAGS_M = $(CFLAGS) $(DBUS_FLAGS)
+PREFIX  = /usr/local
+BINDIR  = $(PREFIX)/bin
 
-SRC     = src
-MOD     = modules
+SRC = src
+MOD = modules
 
-DAEMON_SRC  = $(SRC)/daemon.c $(SRC)/render.c $(SRC)/log.c
-CLIENT_SRC  = $(SRC)/client.c
-MODULE_SRCS = $(MOD)/module.c
-
-ALL_MODULES = volume bright
+ALL_MODULES = vol bri med
 
 ifeq ($(MODULES),all)
 MODULES = $(ALL_MODULES)
 endif
 
-HIMADRI_MODULES = bright volume
+.PHONY: all modules clean install install-modules
 
-OUTPUT_C = doi
-OUTPUT_D = doid
+all: doid doi modules
 
-PREFIX    = /usr/local
-BINDIR    = $(PREFIX)/bin
+doid: $(SRC)/daemon.c $(SRC)/render.c $(SRC)/log.c $(SRC)/notif.h $(SRC)/log.h config.h
+	$(CC) $(CFLAGS) $(SRC)/daemon.c $(SRC)/render.c $(SRC)/log.c $(DBUS) $(X11) -o $@
 
-.PHONY: all clean install install-modules install-all himadri
-
-all: $(OUTPUT_C) $(OUTPUT_D) modules
-
-$(OUTPUT_C): $(CLIENT_SRC) config.h
-	$(CC) $(CLIENT_SRC) $(FLAGS_C) -o $(OUTPUT_C)
-
-$(OUTPUT_D): $(DAEMON_SRC) src/notif.h src/log.h config.h
-	$(CC) $(DAEMON_SRC) $(FLAGS_D) -o $(OUTPUT_D)
+doi: $(SRC)/client.c config.h
+	$(CC) $(CFLAGS) $< $(DBUS) -o $@
 
 modules: $(foreach m,$(MODULES),doi-$(m))
 
-doi-volume: $(MOD)/volume.c $(MODULE_SRCS) config.h
-	$(CC) $(MOD)/volume.c $(MODULE_SRCS) $(FLAGS_M) -o doi-volume
+doi-vol: $(MOD)/volume.c $(MOD)/module.c $(MOD)/module.h config.h
+	$(CC) $(CFLAGS) $(MOD)/volume.c $(MOD)/module.c $(DBUS) -o $@
 
-doi-bright: $(MOD)/bright.c $(MODULE_SRCS) config.h
-	$(CC) $(MOD)/bright.c $(MODULE_SRCS) $(FLAGS_M) -o doi-bright
+doi-bri: $(MOD)/bright.c $(MOD)/module.c $(MOD)/module.h config.h
+	$(CC) $(CFLAGS) $(MOD)/bright.c $(MOD)/module.c $(DBUS) -o $@
 
-clean:
-	@rm -fv $(OUTPUT_C) $(OUTPUT_D) $(foreach m,$(ALL_MODULES),doi-$(m))
+doi-med: $(MOD)/media.c $(MOD)/module.c $(MOD)/module.h config.h
+	$(CC) $(CFLAGS) $(MOD)/media.c $(MOD)/module.c $(DBUS) -o $@
 
-install: $(OUTPUT_C) $(OUTPUT_D)
-	@install -Dm755 $(OUTPUT_C) $(BINDIR)/doi
-	@install -Dm755 $(OUTPUT_D) $(BINDIR)/doid
-	@install -Dm644 doid.service /etc/systemd/system/doid.service
-	@systemctl daemon-reload
-	@systemctl enable doid
-	@systemctl start doid
-	@echo "installed doi  -> $(BINDIR)/doi"
-	@echo "installed doid -> $(BINDIR)/doid"
-	@echo "installed systemd service -> /etc/systemd/system/doid.service"
-
+install: doid doi
+	install -Dm755 doid $(DESTDIR)$(BINDIR)/doid
+	install -Dm755 doi  $(DESTDIR)$(BINDIR)/doi
+	install -Dm644 doid.service $(HOME)/.config/systemd/user/doid.service
+	systemctl --user daemon-reload
+	systemctl --user enable --now doid
+	@echo "installed -> $(BINDIR)/{doi,doid}"
 
 install-modules:
-	@for m in $(MODULES); do \
-		if [ -f "doi-$$m" ]; then \
-			install -Dm755 "doi-$$m" "$(BINDIR)/doi-$$m"; \
-			echo "installed doi-$$m -> $(BINDIR)/doi-$$m"; \
-		else \
-			echo "SKIP: doi-$$m not built"; \
-		fi; \
+	@for m in vol bri med; do \
+		[ -f "doi-$$m" ] && install -Dm755 "doi-$$m" "$(DESTDIR)$(BINDIR)/doi-$$m" \
+		                 && echo "installed doi-$$m" || true; \
 	done
-	@if [ -f "$(MOD)/screenshot.sh" ]; then \
-		install -Dm755 $(MOD)/screenshot.sh $(BINDIR)/doi-screenshot; \
-		echo "installed doi-screenshot -> $(BINDIR)/doi-screenshot"; \
-	fi
+	@[ -f "$(MOD)/screenshot.sh" ] && \
+		install -Dm755 $(MOD)/screenshot.sh $(DESTDIR)$(BINDIR)/doi-screenshot || true
+	@[ -f "$(MOD)/media.sh" ] && \
+		install -Dm755 $(MOD)/media.sh $(DESTDIR)$(BINDIR)/doi-media-sh || true
 
-install-all: install install-modules
+clean:
+	rm -f doid doi doi-vol doi-bri doi-med
