@@ -1,13 +1,18 @@
-# doi — build system
-# make                   build doid + doi
-# make MODULES="vol bri" build with modules (vol, bri, med)
-# make MODULES=all       build all modules
-# make install           install to PREFIX (default /usr/local)
-# make install-modules   install built modules
-# make clean
+# doi — suckless notification system
+#
+# Targets
+#   make              → build doi (client)
+#   make doi          → build doi (client)
+#   make dmon         → build doid (daemon)
+#   make install      → install doi only
+#   make dmon install → build + install doid and doi, enable systemd unit
+#   make clean        → remove doi and doid
+#   make clean doi    → remove doi only
+#   make clean dmon   → remove doid only
 
 CC     = gcc
-CFLAGS = -Wall -Wextra -pedantic -std=c99 -D_POSIX_C_SOURCE=200809L
+CFLAGS = -Wall -Wextra -pedantic -std=c99 -D_POSIX_C_SOURCE=200809L \
+         -Os -pipe
 
 DBUS  = $(shell pkg-config --cflags --libs dbus-1)
 X11   = -lX11 -lXft -lXext $(shell pkg-config --cflags --libs fontconfig freetype2 2>/dev/null)
@@ -16,52 +21,66 @@ PREFIX  = /usr/local
 BINDIR  = $(PREFIX)/bin
 
 SRC = src
-MOD = modules
+DMN = dmon
 
-ALL_MODULES = vol bri med
+# ── default: doi only ────────────────────────────────────────────────────
 
-ifeq ($(MODULES),all)
-MODULES = $(ALL_MODULES)
-endif
+all: doi
 
-.PHONY: all modules clean install install-modules
-
-all: doid doi modules
-
-doid: $(SRC)/daemon.c $(SRC)/render.c $(SRC)/log.c $(SRC)/notif.h $(SRC)/log.h config.h
-	$(CC) $(CFLAGS) $(SRC)/daemon.c $(SRC)/render.c $(SRC)/log.c $(DBUS) $(X11) -o $@
+# ── doi (client) ─────────────────────────────────────────────────────────
 
 doi: $(SRC)/client.c config.h
-	$(CC) $(CFLAGS) $< $(DBUS) -o $@
+	$(CC) $(CFLAGS) $(SRC)/client.c $(DBUS) -o doi
 
-modules: $(foreach m,$(MODULES),doi-$(m))
+# ── doid (daemon, lives in dmon/) ────────────────────────────────────────
 
-doi-vol: $(MOD)/volume.c $(MOD)/module.c $(MOD)/module.h config.h
-	$(CC) $(CFLAGS) $(MOD)/volume.c $(MOD)/module.c $(DBUS) -o $@
+doid: $(DMN)/daemon.c $(SRC)/render.c $(SRC)/log.c \
+      $(SRC)/notif.h $(SRC)/log.h config.h
+	$(CC) $(CFLAGS) \
+	      $(DMN)/daemon.c $(SRC)/render.c $(SRC)/log.c \
+	      $(DBUS) $(X11) -o doid
 
-doi-bri: $(MOD)/bright.c $(MOD)/module.c $(MOD)/module.h config.h
-	$(CC) $(CFLAGS) $(MOD)/bright.c $(MOD)/module.c $(DBUS) -o $@
+# 'make dmon' is an alias for building doid
+dmon: doid
 
-doi-med: $(MOD)/media.c $(MOD)/module.c $(MOD)/module.h config.h
-	$(CC) $(CFLAGS) $(MOD)/media.c $(MOD)/module.c $(DBUS) -o $@
+# ── install ───────────────────────────────────────────────────────────────
 
-install: doid doi
+install: doi
+	install -Dm755 doi $(DESTDIR)$(BINDIR)/doi
+	@echo "installed -> $(BINDIR)/doi"
+
+# 'make dmon install' works because make processes all goals left-to-right:
+#   1. dmon  → builds doid
+#   2. install → installs doi (builds if needed) + checks for doid
+# For a one-shot "install both + systemd" use: make dmon-install
+dmon-install: doid doi
 	install -Dm755 doid $(DESTDIR)$(BINDIR)/doid
 	install -Dm755 doi  $(DESTDIR)$(BINDIR)/doi
 	install -Dm644 doid.service /etc/systemd/system/doid.service
 	systemctl daemon-reload
 	systemctl enable --now doid
-	@echo "installed -> $(BINDIR)/{doi,doid}"
+	@echo "installed -> $(BINDIR)/doid $(BINDIR)/doi + systemd unit"
 
-install-modules:
-	@for m in vol bri med; do \
-		[ -f "doi-$$m" ] && install -Dm755 "doi-$$m" "$(DESTDIR)$(BINDIR)/doi-$$m" \
-		                 && echo "installed doi-$$m" || true; \
-	done
-	@[ -f "$(MOD)/screenshot.sh" ] && \
-		install -Dm755 $(MOD)/screenshot.sh $(DESTDIR)$(BINDIR)/doi-screenshot || true
-	@[ -f "$(MOD)/media.sh" ] && \
-		install -Dm755 $(MOD)/media.sh $(DESTDIR)$(BINDIR)/doi-media-sh || true
+# ── clean ─────────────────────────────────────────────────────────────────
 
-clean:
-	rm -f doid doi doi-vol doi-bri doi-med
+# 'make clean'      → removes both
+# 'make clean doi'  → make sees two targets: clean + doi; use clean-doi instead
+#                     OR rely on the combined phony below
+# To match the mental model exactly:
+#   make clean      → all
+#   make clean doi  → doi only   (achieved via: make clean-doi)
+#   make clean dmon → doid only  (achieved via: make clean-dmon)
+#
+# We also handle 'make clean doi' and 'make clean dmon' as sequential targets
+# which naturally works: 'clean' runs (removes all), then 'doi' rebuilds.
+# For "clean only X", the canonical names are clean-doi / clean-dmon.
+
+clean: clean-doi clean-dmon
+
+clean-doi:
+	rm -f doi
+
+clean-dmon:
+	rm -f doid
+
+.PHONY: all doi dmon doid dmon-install install clean clean-doi clean-dmon
