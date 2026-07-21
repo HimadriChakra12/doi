@@ -2,13 +2,14 @@
 #
 # Typical install workflow:
 #
-#   sudo make dmon-install    # build + install binaries to /usr/local/bin
-#   make dmon-enable          # register + start the systemd user unit
-#                               (run WITHOUT sudo, as your normal user)
+#   cp config.def.h config.h   # first time only — then edit config.h
+#   sudo make dmon-install     # build + install binaries to /usr/local/bin
+#   make dmon-enable           # register + start the systemd user unit
+#                                (run WITHOUT sudo, as your normal user)
 #
 # Other targets:
-#   make              build doi (notification client) only
-#   make dmon         build doid (notification daemon) only
+#   make              build doi (client) only
+#   make dmon         build doid (daemon) only
 #   make install      install doi only (no daemon)
 #   make dmon-enable  enable/start doid.service for the current user
 #   make dmon-disable stop + disable doid.service for the current user
@@ -28,6 +29,13 @@ BINDIR = $(PREFIX)/bin
 SRC = src
 DMN = dmon
 
+# ── config.h (suckless pattern) ────────────────────────────────────────
+# config.h is the user's copy — never overwrite it if it already exists.
+# config.def.h is the upstream default tracked in git.
+
+config.h:
+	cp config.def.h config.h
+
 # ── build ──────────────────────────────────────────────────────────────
 
 all: doi
@@ -45,35 +53,28 @@ dmon: doid
 
 # ── install (run with sudo) ────────────────────────────────────────────
 
-install: doi
+install: doi config.h
 	install -Dm755 doi $(DESTDIR)$(BINDIR)/doi
 	@echo "installed -> $(BINDIR)/doi"
 
 # Installs binaries only — does NOT touch systemd.
-# Requires root because BINDIR is /usr/local/bin.
-# After this, run  make dmon-enable  (without sudo) to set up the unit.
-dmon-install: doid doi
+# After this, run  make dmon-enable  (without sudo) to register the unit.
+dmon-install: doid doi config.h
 	install -Dm755 doid $(DESTDIR)$(BINDIR)/doid
 	install -Dm755 doi  $(DESTDIR)$(BINDIR)/doi
 	@echo "installed -> $(BINDIR)/doid  $(BINDIR)/doi"
 	@echo ""
-	@echo "Next step (run WITHOUT sudo):"
+	@echo "Next step (WITHOUT sudo):"
 	@echo "  make dmon-enable"
 
 # ── systemd user unit (run WITHOUT sudo) ──────────────────────────────
 
-# Detect the real user even when called through sudo.
-# SUDO_USER is set by sudo; fall back to USER if running normally.
-REAL_USER  = $(firstword $(SUDO_USER) $(USER))
-REAL_HOME  = $(shell getent passwd $(REAL_USER) | cut -d: -f6)
-UNIT_DIR   = $(REAL_HOME)/.config/systemd/user
-UNIT_FILE  = $(UNIT_DIR)/doid.service
+UNIT_DIR  = $(HOME)/.config/systemd/user
+UNIT_FILE = $(UNIT_DIR)/doid.service
 
-# Install the unit file and start the service as the real (non-root) user.
-# Must be run without sudo so systemctl --user can reach the session bus.
 dmon-enable:
 	@if [ "$$(id -u)" = "0" ]; then \
-	  echo "ERROR: run  make dmon-enable  WITHOUT sudo (as your normal user)." >&2; \
+	  echo "ERROR: run  make dmon-enable  WITHOUT sudo." >&2; \
 	  exit 1; \
 	fi
 	install -Dm644 doid.service $(UNIT_FILE)
@@ -81,7 +82,6 @@ dmon-enable:
 	systemctl --user enable --now doid
 	@echo "doid enabled and started for user $$USER"
 
-# Stop and remove the unit (also without sudo).
 dmon-disable:
 	@if [ "$$(id -u)" = "0" ]; then \
 	  echo "ERROR: run  make dmon-disable  WITHOUT sudo." >&2; \
@@ -93,6 +93,7 @@ dmon-disable:
 	@echo "doid disabled for user $$USER"
 
 # ── clean ─────────────────────────────────────────────────────────────
+# Does NOT remove config.h — that's the user's file.
 
 clean: clean-doi clean-dmon
 

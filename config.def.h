@@ -34,7 +34,7 @@
 #define NOTIF_HEIGHT  56    /* fixed notification height in px            */
 
 /* ── position ────────────────────────────────────────────────────────── */
-#define POS_X     RIGHT  /* LEFT | CENTER | RIGHT                         */
+#define POS_X     LEFT  /* LEFT | CENTER | RIGHT                         */
 #define POS_Y     TOP    /* TOP  | MIDDLE | BOTTOM                        */
 #define OFFSET_X  20     /* px from screen edge horizontally              */
 #define OFFSET_Y  20     /* px from screen edge vertically                */
