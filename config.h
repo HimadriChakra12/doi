@@ -25,7 +25,7 @@
 #define BORDER_COLOR  "wheat"
 
 /* ── geometry ────────────────────────────────────────────────────────── */
-#define BORDER        0     /* border thickness in px; 0 = no border     */
+#define BORDER        1     /* border thickness in px; 0 = no border     */
 #define BORDER_RADIUS 0     /* corner radius in px; 0 = sharp corners    */
 #define PADDING       8     /* horizontal padding inside content area     */
 #define MARGIN        6     /* gap between border edge and content        */
