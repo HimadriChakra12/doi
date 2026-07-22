@@ -30,7 +30,7 @@
 #define PADDING       8     /* horizontal padding inside content area     */
 #define MARGIN        6     /* gap between border edge and content        */
 #define MIN_WIDTH     260   /* minimum notification width in px           */
-#define MAX_WIDTH_PCT 40    /* maximum width as % of screen width         */
+#define MAX_WIDTH_PCT 20    /* maximum width as % of screen width         */
 #define NOTIF_HEIGHT  56    /* fixed notification height in px            */
 
 /* ── position ────────────────────────────────────────────────────────── */
