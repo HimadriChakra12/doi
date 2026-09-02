@@ -73,14 +73,21 @@ UNIT_DIR  = $(HOME)/.config/systemd/user
 UNIT_FILE = $(UNIT_DIR)/doid.service
 
 dmon-enable:
-	@if [ "$$(id -u)" = "0" ]; then \
-	  echo "ERROR: run  make dmon-enable  WITHOUT sudo." >&2; \
-	  exit 1; \
+	@if [ -n "$$SUDO_USER" ]; then \
+		USER_HOME="$$(getent passwd "$$SUDO_USER" | cut -d: -f6)"; \
+		echo "Running dmon-enable as $$SUDO_USER"; \
+		install -Dm644 doid.service "$$USER_HOME/.config/systemd/user/doid.service"; \
+		sudo -u "$$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$$(id -u "$$SUDO_USER")" \
+			systemctl --user daemon-reload; \
+		sudo -u "$$SUDO_USER" XDG_RUNTIME_DIR="/run/user/$$(id -u "$$SUDO_USER")" \
+			systemctl --user enable --now doid; \
+		echo "doid enabled and started for user $$SUDO_USER"; \
+	else \
+		install -Dm644 doid.service $(UNIT_FILE); \
+		systemctl --user daemon-reload; \
+		systemctl --user enable --now doid; \
+		echo "doid enabled and started for user $$USER"; \
 	fi
-	install -Dm644 doid.service $(UNIT_FILE)
-	systemctl --user daemon-reload
-	systemctl --user enable --now doid
-	@echo "doid enabled and started for user $$USER"
 
 dmon-disable:
 	@if [ "$$(id -u)" = "0" ]; then \
